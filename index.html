@@ -13,26 +13,14 @@
     <h1 class="text-2xl font-bold text-white">🤖 AI 视觉对话助手</h1>
 
     <div class="relative w-full bg-gray-900 rounded-xl overflow-hidden border border-gray-700" style="aspect-ratio: 4/3; max-height: 480px;">
-      <video
-        id="video"
-        class="w-full h-full object-cover"
-        autoplay
-        playsinline
-        muted
-      ></video>
+      <video id="video" class="w-full h-full object-cover" autoplay playsinline muted></video>
     </div>
 
     <canvas id="canvas" width="640" height="480" class="hidden"></canvas>
 
-    <div
-      id="replyArea"
-      class="w-full min-h-[80px] bg-gray-900 border border-gray-700 rounded-xl p-4 text-gray-300 text-sm leading-relaxed hidden"
-    ></div>
+    <div id="replyArea" class="w-full min-h-[80px] bg-gray-900 border border-gray-700 rounded-xl p-4 text-gray-300 text-sm leading-relaxed hidden"></div>
 
-    <button
-      id="talkBtn"
-      class="w-full py-4 rounded-xl text-lg font-semibold select-none transition-colors duration-200 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white cursor-pointer"
-    >
+    <button id="talkBtn" class="w-full py-4 rounded-xl text-lg font-semibold select-none transition-colors duration-200 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white cursor-pointer">
       🎤 按住说话
     </button>
 
@@ -41,21 +29,11 @@
   </div>
 
   <script>
-  // ─── 常量 ───
-  const ASR_WS_URL = 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen-asr-realtime';
-  const API_KEY = 'sk-ws-H.REDEPRI.HrBc.MEUCIQDf04hQShmOFu8HvVUO1Rd1NJrUTXAhU0rUn9vseLwhIgIgIFtT0vDO5-_fqpjqP9y2H2OdyzFD1pKfexUk7iS4Sog';
-
-  // ─── 全局状态 ───
   let stream = null;
   let isProcessing = false;
-  let audioContext = null;
-  let processor = null;
-  let websocket = null;
-  let finalText = null;
-  let wsReady = false;
-  let silenceTimer = null;
+  let mediaRecorder = null;
+  let audioChunks = [];
 
-  // ─── DOM 引用 ───
   const video = document.getElementById('video');
   const canvas = document.getElementById('canvas');
   const ctx = canvas.getContext('2d');
@@ -63,7 +41,6 @@
   const talkBtn = document.getElementById('talkBtn');
   const hint = document.getElementById('hint');
 
-  // ─── 按钮状态 ───
   function setButtonState(state) {
     const states = {
       idle:    { text: '🎤 按住说话', cls: 'bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white' },
@@ -75,15 +52,11 @@
     talkBtn.className = 'w-full py-4 rounded-xl text-lg font-semibold select-none transition-colors duration-200 ' + s.cls;
   }
 
-  // ─── 显示错误（红色，3秒消失） ───
   function showError(msg) {
     replyArea.classList.remove('hidden');
     replyArea.innerHTML = '<span class="text-red-400">' + escapeHtml(msg) + '</span>';
     setTimeout(() => {
-      if (replyArea.querySelector('.text-red-400')) {
-        replyArea.classList.add('hidden');
-        replyArea.innerHTML = '';
-      }
+      if (replyArea.querySelector('.text-red-400')) { replyArea.classList.add('hidden'); replyArea.innerHTML = ''; }
     }, 3000);
   }
 
@@ -92,194 +65,159 @@
     replyArea.innerHTML = '<p class="text-white whitespace-pre-wrap">' + escapeHtml(text) + '</p>';
   }
 
-  function resetToIdle() {
-    isProcessing = false;
-    setButtonState('idle');
-  }
+  function resetToIdle() { isProcessing = false; setButtonState('idle'); }
 
-  function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
-  }
+  function escapeHtml(str) { const d = document.createElement('div'); d.textContent = str; return d.innerHTML; }
 
   // ─── 页面加载 ───
   async function init() {
+    console.log('[init] 页面加载');
     if (!navigator.mediaDevices?.getUserMedia) {
-      hint.textContent = '⚠️ 请使用 Chrome 浏览器（不支持摄像头访问）';
-      hint.className = 'text-xs text-red-400';
-      talkBtn.disabled = true;
-      talkBtn.className = 'w-full py-4 rounded-xl text-lg font-semibold bg-gray-700 text-gray-500 cursor-not-allowed';
-      return;
+      hint.textContent = '⚠️ 请使用 Chrome 浏览器'; hint.className = 'text-xs text-red-400';
+      talkBtn.disabled = true; return;
     }
-
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480 },
-        audio: true,
-      });
+      stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: true });
+      console.log('[init] getUserMedia 成功, 音频轨道:', stream.getAudioTracks().length);
+      stream.getAudioTracks().forEach((t, i) => console.log(`[init]  音频#${i}: "${t.label}" readyState=${t.readyState}`));
       video.srcObject = stream;
-      hint.textContent = '提示：请使用 Chrome 浏览器';
-      hint.className = 'text-xs text-gray-500';
+      hint.textContent = '提示：请使用 Chrome 浏览器'; hint.className = 'text-xs text-gray-500';
     } catch (err) {
-      hint.textContent = '⚠️ 需要摄像头和麦克风权限，请在浏览器设置中开启';
-      hint.className = 'text-xs text-red-400';
-      talkBtn.disabled = true;
-      talkBtn.className = 'w-full py-4 rounded-xl text-lg font-semibold bg-gray-700 text-gray-500 cursor-not-allowed';
-      return;
+      console.error('[init] getUserMedia 失败:', err.message);
+      hint.textContent = '⚠️ 需要摄像头和麦克风权限'; hint.className = 'text-xs text-red-400';
+      talkBtn.disabled = true; return;
     }
-
     talkBtn.addEventListener('mousedown', onButtonDown);
     talkBtn.addEventListener('mouseup', onButtonUp);
     talkBtn.addEventListener('mouseleave', onButtonUp);
     talkBtn.addEventListener('touchstart', onButtonDown, { passive: false });
     talkBtn.addEventListener('touchend', onButtonUp);
+    console.log('[init] 就绪');
   }
 
-  // ─── 按钮按下：建立 AudioContext + WebSocket ───
+  // ─── 按下 ───
   function onButtonDown(e) {
     e.preventDefault();
-
-    if (isProcessing) return;
-    if (!stream) return;
-
+    if (isProcessing || !stream) return;
     isProcessing = true;
-    finalText = null;
     setButtonState('recording');
+    audioChunks = [];
 
-    // AudioContext — 必须 16000Hz
-    audioContext = new AudioContext({ sampleRate: 16000 });
-    const source = audioContext.createMediaStreamSource(stream);
-    processor = audioContext.createScriptProcessor(4096, 1, 1);
-
-    // WebSocket 连接 ASR（带 token 鉴权）
-    const wsUrl = ASR_WS_URL + '&token=' + encodeURIComponent(API_KEY);
-    websocket = new WebSocket(wsUrl);
-    websocket.binaryType = 'arraybuffer';
-
-    websocket.onopen = function() {
-      // 配置服务端 VAD
-      websocket.send(JSON.stringify({
-        type: 'session.update',
-        session: { turn_detection: { type: 'server_vad' } }
-      }));
-      wsReady = true;
-    };
-
-    websocket.onmessage = function(event) {
-      const msg = JSON.parse(event.data);
-      if (msg.type === 'transcription.completed' && msg.transcription?.text) {
-        finalText = msg.transcription.text;
-      }
-      if (msg.type === 'session.finished') {
-        finish();
-      }
-    };
-
-    websocket.onerror = function() {
-      cleanupAudio();
-      showError('语音识别连接失败');
-      resetToIdle();
-    };
-
-    // 音频处理：Float32 → Int16 PCM → WebSocket 发送
-    processor.onaudioprocess = function(e) {
-      if (!wsReady) return;
-      const input = e.inputBuffer.getChannelData(0);
-      const pcm = new Int16Array(input.length);
-      for (let i = 0; i < input.length; i++) {
-        pcm[i] = Math.max(-32768, Math.min(32767, input[i] * 32768));
-      }
-      if (websocket && websocket.readyState === WebSocket.OPEN) {
-        websocket.send(pcm.buffer);
-      }
-    };
-
-    source.connect(processor);
-
-    // ScriptProcessor 必须 connect 到 destination 才触发 onaudioprocess
-    // 通过 GainNode 静音避免回声
-    const gainNode = audioContext.createGain();
-    gainNode.gain.value = 0;
-    processor.connect(gainNode);
-    gainNode.connect(audioContext.destination);
-
-    // 15 秒超时保护
-    silenceTimer = setTimeout(() => {
-      cleanupAudio();
-      showError('识别超时，请重试');
-      resetToIdle();
-    }, 15000);
-  }
-
-  // ─── 按钮松开：提交音频缓冲区 ───
-  function onButtonUp(e) {
-    e.preventDefault();
-
-    if (!websocket || websocket.readyState !== WebSocket.OPEN) return;
+    const audioTrack = stream.getAudioTracks()[0];
+    if (!audioTrack) { showError('未检测到麦克风'); resetToIdle(); return; }
+    const audioStream = new MediaStream([audioTrack]);
 
     try {
-      websocket.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+      mediaRecorder = new MediaRecorder(audioStream, { mimeType: 'audio/webm' });
     } catch (err) {
-      // WebSocket 可能已关闭，忽略
+      mediaRecorder = new MediaRecorder(audioStream);
+    }
+    console.log('[rec] MediaRecorder started, mimeType:', mediaRecorder.mimeType);
+
+    mediaRecorder.ondataavailable = function(e) { if (e.data.size > 0) audioChunks.push(e.data); };
+
+    mediaRecorder.onerror = function(e) { console.error('[rec] error:', e.error); showError('录音出错'); resetToIdle(); };
+
+    mediaRecorder.onstop = async function() {
+      const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+      console.log('[rec] stopped, blob size:', audioBlob.size, 'chunks:', audioChunks.length);
+
+      if (audioBlob.size < 1000) { showError('未检测到语音，请重试'); resetToIdle(); return; }
+
+      // ── 转换 webm → PCM 16kHz mono → base64 ──
+      let audioBase64;
+      let pcmByteLen;
+      try {
+        console.log('[conv] 开始音频转换...');
+        const result = await webmToPcmBase64(audioBlob);
+        audioBase64 = result.base64;
+        pcmByteLen = result.byteLen;
+        console.log('[conv] 转换完成, base64:', audioBase64.length, 'pcm bytes:', pcmByteLen);
+      } catch (err) {
+        console.error('[conv] 转换失败:', err.message);
+        showError('音频处理失败，请重试');
+        resetToIdle();
+        return;
+      }
+
+      // 抓帧
+      ctx.drawImage(video, 0, 0, 640, 480);
+      const frame = canvas.toDataURL('image/jpeg', 0.6);
+      console.log('[frame] captured, length:', frame.length);
+
+      await sendToAI(audioBase64, pcmByteLen, frame);
+    };
+
+    mediaRecorder.start();
+  }
+
+  // ─── 松开 ───
+  function onButtonUp(e) {
+    e.preventDefault();
+    if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
+    try { mediaRecorder.stop(); } catch (err) {}
+  }
+
+  // ─── webm blob → PCM Int16 16kHz mono → base64 ───
+  async function webmToPcmBase64(blob) {
+    const arrayBuffer = await blob.arrayBuffer();
+
+    const audioCtx = new AudioContext();
+    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+    console.log('[conv] decoded: sampleRate=', audioBuffer.sampleRate, 'channels=', audioBuffer.numberOfChannels, 'duration=', audioBuffer.duration);
+
+    // 离线重采样到 16kHz 单声道
+    const targetRate = 16000;
+    const offlineCtx = new OfflineAudioContext(1, Math.ceil(targetRate * audioBuffer.duration), targetRate);
+    const source = offlineCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(offlineCtx.destination);
+    source.start(0);
+    const resampled = await offlineCtx.startRendering();
+
+    // Float32 → Int16 PCM
+    const floatData = resampled.getChannelData(0);
+    const pcm = new Int16Array(floatData.length);
+    for (let i = 0; i < floatData.length; i++) {
+      pcm[i] = Math.max(-32768, Math.min(32767, floatData[i] * 32768));
     }
 
+    // Int16 → Uint8 → base64
+    const bytes = new Uint8Array(pcm.buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    const base64 = btoa(binary);
+
+    audioCtx.close();
+    return { base64, byteLen: pcm.byteLength };
+  }
+
+  // ─── 发送 JSON ───
+  async function sendToAI(audioBase64, pcmByteLen, frame) {
     setButtonState('sending');
-  }
-
-  // ─── 识别完成：检查文字 → 抓帧 → 发送 ───
-  function finish() {
-    clearTimeout(silenceTimer);
-    cleanupAudio();
-
-    if (finalText && finalText.trim()) {
-      console.log('识别文字:', finalText);
-      sendToAI(finalText);
-    } else {
-      showError('未检测到语音，请重试');
-      resetToIdle();
-    }
-  }
-
-  // ─── 清理音频资源 ───
-  function cleanupAudio() {
-    if (processor) { processor.disconnect(); processor = null; }
-    if (audioContext) { audioContext.close(); audioContext = null; }
-    if (websocket) { websocket.close(); websocket = null; }
-    wsReady = false;
-  }
-
-  // ─── 抓帧 + 发送 JSON 到后端 ───
-  async function sendToAI(text) {
-    ctx.drawImage(video, 0, 0, 640, 480);
-    const frame = canvas.toDataURL('image/jpeg', 0.6);
-
-    console.log('frame 前50字符:', frame.slice(0, 50));
+    const t0 = Date.now();
+    console.log('[api] POST JSON, audio base64 len:', audioBase64.length, 'frame len:', frame.length);
 
     try {
       const resp = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ frame, text }),
+        body: JSON.stringify({ audio: audioBase64, pcmLen: pcmByteLen, frame }),
       });
-
+      const elapsed = Date.now() - t0;
       const data = await resp.json();
+      console.log('[api] status:', resp.status, 'elapsed:', elapsed, 'ms, text:', data.text?.slice(0, 80), 'error:', data.error);
 
-      if (resp.ok && data.text) {
-        showReply(data.text);
-      } else {
-        showError(data.error || '请求失败');
-      }
+      if (resp.ok && data.text) { showReply(data.text); }
+      else { showError(data.error || '请求失败'); }
     } catch (err) {
+      console.error('[api] 网络错误:', err.message);
       showError('网络错误，请检查连接');
     }
-
     resetToIdle();
   }
 
-  // ─── 启动 ───
   init();
   </script>
-
 </body>
 </html>
