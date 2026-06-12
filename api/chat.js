@@ -16,6 +16,10 @@ let baiduTokenExpiry = 0;
 // ═══════════════════════════════════════════════
 
 export default async function handler(req) {
+  // ── 路由分发 ──
+  const url = new URL(req.url);
+  const pathname = url.pathname;
+
   if (req.method === 'OPTIONS') {
     return new Response(null, {
       headers: {
@@ -29,35 +33,25 @@ export default async function handler(req) {
     return json(405, { text: null, audio: null, error: '仅支持 POST' });
   }
 
+  if (pathname.endsWith('/stream')) return handleStream(req);
+  if (pathname.endsWith('/tts')) return handleTTS(req);
+  // 默认: 非流式 /api/chat（Phase 2 行为不变）
+
   // ── 解析 & 校验 ──
   let body;
   try { body = await req.json(); } catch {
     return json(400, { text: null, audio: null, error: '请求格式错误，需要 JSON' });
   }
 
-  const parsed = parseAndValidate(body);
-  if (!parsed.valid) {
-    return json(400, { text: null, audio: null, error: parsed.error });
-  }
-  const { audio, frame, history: conversationHistory } = parsed.data;
+  const proc = await processAudio(body);
+  if (proc.error) return json(proc.status, { text: null, audio: null, error: proc.error });
+  const { frame, text: userText, history: conversationHistory, model } = proc.data;
 
   const tTotal = Date.now();
   try {
-    // ── 语音识别 ──
-    const tASR = Date.now();
-    const asrResult = await transcribeAudio(audio);
-    console.log('[api] ASR 耗时', Date.now() - tASR, 'ms, text:', asrResult.text?.slice(0, 60));
-
-    if (asrResult.error) {
-      return json(asrResult.status, { text: null, audio: null, error: asrResult.error });
-    }
-    if (!asrResult.text || asrResult.text.trim().length === 0) {
-      return json(200, { text: null, audio: null, error: '未识别到语音内容，请重试' });
-    }
-
     // ── 视觉对话 ──
     const tLLM = Date.now();
-    const llmResult = await chatWithVision(frame, asrResult.text, conversationHistory);
+    const llmResult = await chatWithVision(frame, userText, conversationHistory);
 
     if (llmResult.error) {
       return json(llmResult.status, { text: null, audio: null, error: llmResult.error });
@@ -69,7 +63,7 @@ export default async function handler(req) {
     console.log('[api] TTS 耗时', Date.now() - tTTS, 'ms, audio:', ttsResult.audio ? `${ttsResult.audio.length} chars` : 'null');
 
     console.log('[api] LLM 耗时', Date.now() - tLLM, 'ms, 总耗时', Date.now() - tTotal, 'ms');
-    return json(200, { text: llmResult.text, userText: asrResult.text, audio: ttsResult.audio, error: null });
+    return json(200, { text: llmResult.text, userText, audio: ttsResult.audio, error: null });
 
   } catch (err) {
     if (err.name === 'AbortError') {
@@ -78,6 +72,116 @@ export default async function handler(req) {
     console.error('[api] 异常:', err.message);
     return json(500, { text: null, audio: null, error: '服务内部错误' });
   }
+}
+
+// ═══════════════════════════════════════════════
+//  共享：ASR + 校验（流式/非流式共用）
+// ═══════════════════════════════════════════════
+
+async function processAudio(body) {
+  const parsed = parseAndValidate(body);
+  if (!parsed.valid) return { error: parsed.error, status: 400 };
+
+  const { audio, frame, history } = parsed.data;
+  const asrResult = await transcribeAudio(audio);
+  if (asrResult.error) return { error: asrResult.error, status: asrResult.status };
+  if (!asrResult.text?.trim()) return { error: '未识别到语音内容，请重试', status: 200 };
+
+  const model = body.model || process.env.LLM_MODEL || 'qwen-vl-plus';
+  return { data: { frame, text: asrResult.text, history, model } };
+}
+
+// ═══════════════════════════════════════════════
+//  流式端点 — POST /api/chat/stream (SSE)
+// ═══════════════════════════════════════════════
+
+async function handleStream(req) {
+  let body;
+  try { body = await req.json(); } catch {
+    return json(400, { error: '请求格式错误，需要 JSON' });
+  }
+
+  const proc = await processAudio(body);
+  if (proc.error) return json(proc.status, { error: proc.error });
+  const { frame, text: userText, history, model } = proc.data;
+
+  const apiKey = process.env.LLM_API_KEY;
+  if (!apiKey) {
+    return json(500, { error: '服务未配置 LLM Key' });
+  }
+  const baseUrl = process.env.LLM_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+
+  let streamResp;
+  try {
+    streamResp = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model,
+        messages: buildMessages(frame, userText, history),
+        max_tokens: 300, temperature: 0.7, stream: true,
+      }),
+      signal: AbortSignal.timeout(25_000),
+    });
+  } catch (err) {
+    if (err.name === 'AbortError') return json(500, { error: 'LLM 超时，请重试' });
+    throw err;
+  }
+
+  if (!streamResp.ok) {
+    const errText = await streamResp.text().catch(() => '');
+    console.error('[stream] LLM error:', streamResp.status, errText.slice(0, 300));
+    return json(streamResp.status, { error: `LLM 错误 (${streamResp.status})` });
+  }
+
+  // 拼接：第一个 SSE 事件 = userText，后续 = LLM 流
+  const encoder = new TextEncoder();
+  const userTextEvent = encoder.encode(`data: ${JSON.stringify({ userText })}\n\n`);
+
+  const combined = new ReadableStream({
+    async start(controller) {
+      controller.enqueue(userTextEvent);
+      const reader = streamResp.body.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          controller.enqueue(value);
+        }
+      } finally {
+        reader.releaseLock();
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(combined, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+    },
+  });
+}
+
+// ═══════════════════════════════════════════════
+//  TTS 端点 — POST /api/tts
+// ═══════════════════════════════════════════════
+
+async function handleTTS(req) {
+  let body;
+  try { body = await req.json(); } catch {
+    return json(400, { audio: null, error: '请求格式错误' });
+  }
+
+  const { text } = body;
+  if (!text || typeof text !== 'string') {
+    return json(400, { audio: null, error: '缺少 text 参数' });
+  }
+
+  const ttsResult = await synthesizeSpeech(text);
+  return json(200, { audio: ttsResult.audio });
 }
 
 // ═══════════════════════════════════════════════
