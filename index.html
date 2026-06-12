@@ -5,12 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI 视觉对话助手</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <style>
-    #messageList::-webkit-scrollbar { width: 4px; }
-    #messageList::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 2px; }
-    .msg-bubble { animation: fadeIn 0.3s ease-out; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-  </style>
+  <link rel="stylesheet" href="./css/style.css" />
 </head>
 <body class="bg-gray-950 text-white min-h-screen flex flex-col items-center justify-center p-4">
 
@@ -40,7 +35,7 @@
   </div>
 
   <!-- Lightbox overlay -->
-  <div id="lightbox" class="fixed inset-0 z-50 bg-black/90 hidden flex-col items-center justify-center cursor-pointer" onclick="closeLightbox()">
+  <div id="lightbox" class="fixed inset-0 z-50 bg-black/90 hidden flex-col items-center justify-center cursor-pointer">
     <img id="lightboxImg" class="max-w-[95vw] max-h-[95vh] object-contain rounded-lg shadow-2xl" src="" alt="原图" />
     <p class="text-gray-400 text-xs mt-3">点击任意处或按 Esc 关闭</p>
   </div>
@@ -80,7 +75,7 @@
   function escapeHtml(str) { const d = document.createElement('div'); d.textContent = str; return d.innerHTML; }
   function escapeAttr(str) { return String(str).replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
 
-  // ─── 缩略图放大 ───
+  // ─── 缩略图放大（Lightbox） ───
   const lightbox = document.getElementById('lightbox');
   const lightboxImg = document.getElementById('lightboxImg');
 
@@ -95,6 +90,14 @@
     lightbox.classList.remove('flex');
     lightboxImg.src = '';
   }
+
+  lightbox.addEventListener('click', closeLightbox);
+
+  // 缩略图点击：事件委托在 messageList 上
+  messageList.addEventListener('click', function(e) {
+    const img = e.target.closest('.thumbnail');
+    if (img) { e.stopPropagation(); openLightbox(img.src); }
+  });
 
   document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape' && !lightbox.classList.contains('hidden')) {
@@ -124,7 +127,7 @@
     if (role === 'user') {
       wrapper.innerHTML =
         `<div class="max-w-[80%] bg-blue-600 rounded-xl px-3 py-2">` +
-          (frame ? `<img src="${escapeAttr(frame)}" class="w-16 h-12 object-cover rounded-lg mb-1.5 cursor-pointer hover:opacity-80 transition-opacity" onclick="event.stopPropagation();openLightbox(this.src);" title="点击查看原图" />` : '') +
+          (frame ? `<img src="${escapeAttr(frame)}" class="thumbnail w-16 h-12 object-cover rounded-lg mb-1.5 cursor-pointer hover:opacity-80 transition-opacity" title="点击查看原图" />` : '') +
           `<p class="text-white text-sm whitespace-pre-wrap">${escapeHtml(text)}</p>` +
         `</div>`;
     } else if (role === 'assistant') {
