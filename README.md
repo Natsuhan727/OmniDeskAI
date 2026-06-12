@@ -1,82 +1,81 @@
-# OmniDeskAI — AI 视觉对话助手
+# AI 视觉对话助手
 
-> 一个能「看到你看到的、听到你说的」AI 视觉对话助手
-
-打开摄像头和麦克风，让 AI 看到你看到的、听到你说的，并给出恰当的回应。
-
-## Demo 视频
-
-> [提交时替换为 Bilibili/云盘链接]
+用户打开网页，看到摄像头画面，按住按钮说话，AI 结合画面用文字回复。
 
 ## 快速开始
 
-### 环境要求
-
-- Node.js >= 18
-- Chrome 浏览器（桌面端）
-- OpenAI API Key（或其他兼容的 API 端点）
-
-### 本地运行
-
 ```bash
-# 安装依赖
 npm install
-
-# 启动开发服务器
-npm run dev
-# → 打开 http://localhost:3000
+npm run dev       # http://localhost:3000
 ```
 
-### 部署
+## 部署
 
 ```bash
-# 安装 Vercel CLI
 npm i -g vercel
+vercel login
 
-# 设置环境变量
-vercel env add OPENAI_API_KEY
-vercel env add OPENAI_BASE_URL
+vercel env add STORAGE_ENDPOINT
+vercel env add STORAGE_BUCKET
+vercel env add STORAGE_ACCESS_KEY
+vercel env add STORAGE_SECRET_KEY
+vercel env add ASR_API_ENDPOINT
+vercel env add ASR_API_KEY
+vercel env add LLM_API_KEY
+vercel env add LLM_BASE_URL
+vercel env add LLM_MODEL
 
-# 部署
 vercel --prod
 ```
 
+## 环境变量
+
+| 变量 | 用途 |
+|------|------|
+| `STORAGE_ENDPOINT` | S3 兼容存储 endpoint |
+| `STORAGE_BUCKET` | 存储桶名称 |
+| `STORAGE_ACCESS_KEY` | 存储 Access Key |
+| `STORAGE_SECRET_KEY` | 存储 Secret Key |
+| `STORAGE_REGION` | 存储区域（默认 auto） |
+| `ASR_API_ENDPOINT` | ASR 服务 URL |
+| `ASR_API_KEY` | ASR 服务 Key |
+| `LLM_API_KEY` | LLM API Key |
+| `LLM_BASE_URL` | LLM API Base URL |
+| `LLM_MODEL` | 模型名称（默认 gpt-4o） |
+
 ## 技术栈
 
-| 层 | 技术 | 说明 |
-|---|------|------|
-| 前端 | Vite + Vanilla JS + Tailwind CSS CDN | 零额外依赖 |
-| ASR | Web Speech API | 浏览器内置语音识别 |
-| 多模态 LLM | OpenAI GPT-4o | 视觉理解 + 文本生成 |
-| 后端 | Vercel Edge Function | API 代理层 |
-| 部署 | Vercel | 前端 + Function 一体部署 |
+| 层 | 技术 |
+|---|---|
+| 前端 | Vite 5.x + Vanilla JS + Tailwind CSS CDN |
+| 录音 | MediaRecorder API (audio/webm) |
+| 抓帧 | Canvas API (640×480 JPEG Q=60) |
+| 云存储 | S3 兼容对象存储 |
+| ASR | 云端 ASR 服务 (REST API) |
+| LLM | 多模态 LLM (OpenAI 兼容 API) |
+| 后端 | Vercel Edge Function |
+| 部署 | Vercel |
 
 ## 项目结构
 
 ```
-├── index.html          # 前端页面（HTML + CSS + JS）
+├── index.html          # 前端页面
 ├── api/
-│   └── chat.js         # Vercel Edge Function（API 代理）
+│   └── chat.js         # Vercel Edge Function（S3 + ASR + LLM 编排）
 ├── package.json        # Vite 依赖
 ├── vite.config.js      # Vite 配置
-└── vercel.json         # Vercel 部署配置
+├── vercel.json         # Vercel 部署配置
+└── README.md
 ```
 
-## 核心功能（Phase 1 MVP）
+## API
 
-- 📷 摄像头实时预览
-- 🎤 按住按钮说话 → Web Speech 语音识别
-- 🤖 AI 结合摄像头画面回答问题（文字回复）
+**POST /api/chat** — Content-Type: multipart/form-data
 
-## 开发计划
-
-本项目采用 MVP 渐进式开发。详见仓库内 `PRD-Phase1-MVP.md`。
-
-| Phase | 目标 |
-|-------|------|
-| Phase 1 | 核心链路：摄像头 + 语音 → AI 文字回复 |
-| Phase 2 | 体验提升：TTS 语音播报、VAD、多轮对话 |
-| Phase 3 | 成本控制：模型分级、场景缓存、流式输出 |
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `audio` | Blob | WebM 音频 |
+| `frame` | string | `data:image/jpeg;base64,...` |
 
 ## 许可证
 
