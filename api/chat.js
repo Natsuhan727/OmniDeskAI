@@ -195,30 +195,46 @@ async function llmDashScope(frame, text, history = []) {
   const baseUrl = process.env.LLM_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
   const model = process.env.LLM_MODEL || 'qwen-vl-plus';
 
-  const resp = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model,
-      messages: buildMessages(frame, text, history),
-      max_tokens: 300, temperature: 0.7,
-    }),
-    signal: AbortSignal.timeout(20_000),
+  const reqBody = JSON.stringify({
+    model,
+    messages: buildMessages(frame, text, history),
+    max_tokens: 300, temperature: 0.7,
   });
 
-  if (!resp.ok) {
-    const errText = await resp.text().catch(() => '');
-    console.error('[llm] error:', resp.status, errText.slice(0, 500));
-    return { text: null, error: `LLM 错误 (${resp.status}): ${errText.slice(0, 300)}`, status: 500 };
+  // ── 发送（超时重试 1 次） ──
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let resp;
+    try {
+      resp = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: reqBody,
+        signal: AbortSignal.timeout(20_000),
+      });
+    } catch (err) {
+      if (err.name === 'AbortError' && attempt === 0) {
+        console.log('[llm] 超时，重试中...');
+        continue;
+      }
+      throw err;
+    }
+
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '');
+      console.error('[llm] error:', resp.status, errText.slice(0, 500));
+      return { text: null, error: `LLM 错误 (${resp.status}): ${errText.slice(0, 300)}`, status: 500 };
+    }
+
+    const data = await resp.json();
+    const reply = data.choices?.[0]?.message?.content;
+    if (!reply) {
+      return { text: null, error: 'LLM 返回为空', status: 500 };
+    }
+
+    return { text: reply, error: null, status: 200 };
   }
 
-  const data = await resp.json();
-  const reply = data.choices?.[0]?.message?.content;
-  if (!reply) {
-    return { text: null, error: 'LLM 返回为空', status: 500 };
-  }
-
-  return { text: reply, error: null, status: 200 };
+  return { text: null, error: 'LLM 超时，请重试', status: 500 };
 }
 
 // ── 构造 LLM messages（含视觉记忆） ──
