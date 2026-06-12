@@ -60,7 +60,7 @@
       idle:    { text: '🎤 按住说话', cls: 'bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white' },
       recording: { text: '🔴 录音中...松开发送', cls: 'bg-red-600 hover:bg-red-500 active:bg-red-700 text-white' },
       sending: { text: '⏳ AI 思考中...', cls: 'bg-gray-600 text-gray-300 cursor-not-allowed' },
-      speaking: { text: '🔊 AI 回复中...', cls: 'bg-green-600 text-white cursor-not-allowed' },
+      speaking: { text: '🔊 AI 回复中...（点击打断）', cls: 'bg-green-600 hover:bg-green-500 active:bg-green-700 text-white cursor-pointer' },
     };
     const s = states[state];
     talkBtn.textContent = s.text;
@@ -175,9 +175,8 @@
   // ─── 按下（含打断逻辑） ───
   function onButtonDown(e) {
     e.preventDefault();
-    if (isProcessing) return;
 
-    // 打断：正在播放 TTS 时，停止播放，不进入录音
+    // 打断：正在播放 TTS 时，停止播放，不进入录音（必须在 isProcessing 之前）
     if (currentAudio && !currentAudio.paused) {
       currentAudio.pause();
       currentAudio = null;
@@ -186,7 +185,7 @@
       return;
     }
 
-    if (!stream) return;
+    if (isProcessing || !stream) return;
     isProcessing = true;
     setButtonState('recording');
     audioChunks = [];
