@@ -39,6 +39,12 @@
 
   </div>
 
+  <!-- Lightbox overlay -->
+  <div id="lightbox" class="fixed inset-0 z-50 bg-black/90 hidden flex-col items-center justify-center cursor-pointer" onclick="closeLightbox()">
+    <img id="lightboxImg" class="max-w-[95vw] max-h-[95vh] object-contain rounded-lg shadow-2xl" src="" alt="原图" />
+    <p class="text-gray-400 text-xs mt-3">点击任意处或按 Esc 关闭</p>
+  </div>
+
   <script>
   let stream = null;
   let isProcessing = false;
@@ -72,6 +78,28 @@
   function escapeHtml(str) { const d = document.createElement('div'); d.textContent = str; return d.innerHTML; }
   function escapeAttr(str) { return String(str).replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
 
+  // ─── 缩略图放大 ───
+  const lightbox = document.getElementById('lightbox');
+  const lightboxImg = document.getElementById('lightboxImg');
+
+  function openLightbox(src) {
+    lightboxImg.src = src;
+    lightbox.classList.remove('hidden');
+    lightbox.classList.add('flex');
+  }
+
+  function closeLightbox() {
+    lightbox.classList.add('hidden');
+    lightbox.classList.remove('flex');
+    lightboxImg.src = '';
+  }
+
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && !lightbox.classList.contains('hidden')) {
+      closeLightbox();
+    }
+  });
+
   // ─── 消息列表渲染 ───
   function renderMessages() {
     messageList.querySelectorAll('.msg-bubble').forEach(el => el.remove());
@@ -94,7 +122,7 @@
     if (role === 'user') {
       wrapper.innerHTML =
         `<div class="max-w-[80%] bg-blue-600 rounded-xl px-3 py-2">` +
-          (frame ? `<img src="${escapeAttr(frame)}" class="w-16 h-12 object-cover rounded-lg mb-1.5" />` : '') +
+          (frame ? `<img src="${escapeAttr(frame)}" class="w-16 h-12 object-cover rounded-lg mb-1.5 cursor-pointer hover:opacity-80 transition-opacity" onclick="event.stopPropagation();openLightbox(this.src);" title="点击查看原图" />` : '') +
           `<p class="text-white text-sm whitespace-pre-wrap">${escapeHtml(text)}</p>` +
         `</div>`;
     } else if (role === 'assistant') {
