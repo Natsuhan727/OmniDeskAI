@@ -5,26 +5,37 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI 视觉对话助手</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    #messageList::-webkit-scrollbar { width: 4px; }
+    #messageList::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 2px; }
+    .msg-bubble { animation: fadeIn 0.3s ease-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
 </head>
 <body class="bg-gray-950 text-white min-h-screen flex flex-col items-center justify-center p-4">
 
-  <div class="w-full max-w-lg flex flex-col items-center gap-4">
+  <div class="w-full max-w-lg flex flex-col gap-3" style="max-height: 100vh;">
 
-    <h1 class="text-2xl font-bold text-white">🤖 AI 视觉对话助手</h1>
+    <h1 class="text-xl font-bold text-white text-center">🤖 AI 视觉对话助手</h1>
 
-    <div class="relative w-full bg-gray-900 rounded-xl overflow-hidden border border-gray-700" style="aspect-ratio: 4/3; max-height: 480px;">
+    <!-- Camera -->
+    <div class="relative w-full bg-gray-900 rounded-xl overflow-hidden border border-gray-700 shrink-0" style="aspect-ratio: 4/3; max-height: 360px;">
       <video id="video" class="w-full h-full object-cover" autoplay playsinline muted></video>
     </div>
 
     <canvas id="canvas" width="640" height="480" class="hidden"></canvas>
 
-    <div id="replyArea" class="w-full min-h-[80px] bg-gray-900 border border-gray-700 rounded-xl p-4 text-gray-300 text-sm leading-relaxed hidden"></div>
+    <!-- Message List -->
+    <div id="messageList" class="flex-1 overflow-y-auto space-y-2 min-h-[100px] max-h-[260px] bg-gray-900/50 rounded-xl p-3 border border-gray-700/50">
+      <p id="emptyHint" class="text-gray-500 text-xs text-center py-6">按住下方按钮开始对话</p>
+    </div>
 
-    <button id="talkBtn" class="w-full py-4 rounded-xl text-lg font-semibold select-none transition-colors duration-200 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white cursor-pointer">
+    <!-- Talk Button -->
+    <button id="talkBtn" class="w-full py-4 rounded-xl text-lg font-semibold select-none transition-colors duration-200 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white cursor-pointer shrink-0">
       🎤 按住说话
     </button>
 
-    <p id="hint" class="text-xs text-gray-500">提示：请使用 Chrome 浏览器</p>
+    <p id="hint" class="text-xs text-gray-500 text-center">提示：请使用 Chrome 浏览器</p>
 
   </div>
 
@@ -39,7 +50,8 @@
   const video = document.getElementById('video');
   const canvas = document.getElementById('canvas');
   const ctx = canvas.getContext('2d');
-  const replyArea = document.getElementById('replyArea');
+  const messageList = document.getElementById('messageList');
+  const emptyHint = document.getElementById('emptyHint');
   const talkBtn = document.getElementById('talkBtn');
   const hint = document.getElementById('hint');
 
@@ -55,22 +67,54 @@
     talkBtn.className = 'w-full py-4 rounded-xl text-lg font-semibold select-none transition-colors duration-200 ' + s.cls;
   }
 
-  function showError(msg) {
-    replyArea.classList.remove('hidden');
-    replyArea.innerHTML = '<span class="text-red-400">' + escapeHtml(msg) + '</span>';
-    setTimeout(() => {
-      if (replyArea.querySelector('.text-red-400')) { replyArea.classList.add('hidden'); replyArea.innerHTML = ''; }
-    }, 3000);
-  }
-
-  function showReply(text) {
-    replyArea.classList.remove('hidden');
-    replyArea.innerHTML = '<p class="text-white whitespace-pre-wrap">' + escapeHtml(text) + '</p>';
-  }
-
   function resetToIdle() { isProcessing = false; setButtonState('idle'); }
 
   function escapeHtml(str) { const d = document.createElement('div'); d.textContent = str; return d.innerHTML; }
+  function escapeAttr(str) { return String(str).replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+
+  // ─── 消息列表渲染 ───
+  function renderMessages() {
+    messageList.querySelectorAll('.msg-bubble').forEach(el => el.remove());
+    if (conversationHistory.length === 0) {
+      emptyHint.classList.remove('hidden');
+    } else {
+      emptyHint.classList.add('hidden');
+      for (const msg of conversationHistory) {
+        appendBubble(msg.role, msg.text, msg.frame);
+      }
+    }
+    messageList.scrollTop = messageList.scrollHeight;
+  }
+
+  function appendBubble(role, text, frame) {
+    emptyHint.classList.add('hidden');
+    const wrapper = document.createElement('div');
+    wrapper.className = 'msg-bubble flex ' + (role === 'user' ? 'justify-end' : 'justify-start');
+
+    if (role === 'user') {
+      wrapper.innerHTML =
+        `<div class="max-w-[80%] bg-blue-600 rounded-xl px-3 py-2">` +
+          (frame ? `<img src="${escapeAttr(frame)}" class="w-16 h-12 object-cover rounded-lg mb-1.5" />` : '') +
+          `<p class="text-white text-sm whitespace-pre-wrap">${escapeHtml(text)}</p>` +
+        `</div>`;
+    } else if (role === 'assistant') {
+      wrapper.innerHTML =
+        `<div class="max-w-[80%] bg-gray-700 rounded-xl px-3 py-2">` +
+          `<p class="text-gray-100 text-sm whitespace-pre-wrap">${escapeHtml(text)}</p>` +
+        `</div>`;
+    }
+    messageList.appendChild(wrapper);
+    messageList.scrollTop = messageList.scrollHeight;
+  }
+
+  function showErrorBubble(msg) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'msg-bubble flex justify-center';
+    wrapper.innerHTML = `<div class="max-w-[85%] bg-red-900/50 border border-red-700/50 rounded-xl px-3 py-2"><p class="text-red-300 text-xs">${escapeHtml(msg)}</p></div>`;
+    messageList.appendChild(wrapper);
+    messageList.scrollTop = messageList.scrollHeight;
+    setTimeout(() => { if (wrapper.parentNode) wrapper.remove(); }, 3500);
+  }
 
   // ─── 历史管理 ───
   function addToHistory(role, text, frame) {
@@ -128,16 +172,27 @@
     console.log('[init] 就绪');
   }
 
-  // ─── 按下 ───
+  // ─── 按下（含打断逻辑） ───
   function onButtonDown(e) {
     e.preventDefault();
-    if (isProcessing || !stream) return;
+    if (isProcessing) return;
+
+    // 打断：正在播放 TTS 时，停止播放，不进入录音
+    if (currentAudio && !currentAudio.paused) {
+      currentAudio.pause();
+      currentAudio = null;
+      resetToIdle();
+      console.log('[tts] 用户打断播放');
+      return;
+    }
+
+    if (!stream) return;
     isProcessing = true;
     setButtonState('recording');
     audioChunks = [];
 
     const audioTrack = stream.getAudioTracks()[0];
-    if (!audioTrack) { showError('未检测到麦克风'); resetToIdle(); return; }
+    if (!audioTrack) { showErrorBubble('未检测到麦克风'); resetToIdle(); return; }
     const audioStream = new MediaStream([audioTrack]);
 
     try {
@@ -149,13 +204,13 @@
 
     mediaRecorder.ondataavailable = function(e) { if (e.data.size > 0) audioChunks.push(e.data); };
 
-    mediaRecorder.onerror = function(e) { console.error('[rec] error:', e.error); showError('录音出错'); resetToIdle(); };
+    mediaRecorder.onerror = function(e) { console.error('[rec] error:', e.error); showErrorBubble('录音出错'); resetToIdle(); };
 
     mediaRecorder.onstop = async function() {
       const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
       console.log('[rec] stopped, blob size:', audioBlob.size, 'chunks:', audioChunks.length);
 
-      if (audioBlob.size < 1000) { showError('未检测到语音，请重试'); resetToIdle(); return; }
+      if (audioBlob.size < 1000) { showErrorBubble('未检测到语音，请重试'); resetToIdle(); return; }
 
       // ── 转换 webm → PCM 16kHz mono → base64 ──
       let audioBase64;
@@ -166,7 +221,7 @@
         console.log('[conv] 转换完成, base64:', audioBase64.length);
       } catch (err) {
         console.error('[conv] 转换失败:', err.message);
-        showError('音频处理失败，请重试');
+        showErrorBubble('音频处理失败，请重试');
         resetToIdle();
         return;
       }
@@ -243,7 +298,7 @@
       console.log('[api] status:', resp.status, 'elapsed:', elapsed, 'ms, text:', data.text?.slice(0, 80), 'audio:', data.audio ? `${data.audio.length} chars` : 'null', 'error:', data.error);
 
       if (!resp.ok || data.error) {
-        showError(data.error || '请求失败');
+        showErrorBubble(data.error || '请求失败');
         resetToIdle();
         return;
       }
@@ -252,17 +307,20 @@
         // 成功轮次加入历史
         addToHistory('user', data.userText, frame);
         addToHistory('assistant', data.text);
-        showReply(data.text);
+        // 渲染本轮对话气泡
+        appendBubble('user', data.userText, frame);
+        appendBubble('assistant', data.text);
         if (data.audio) { playAudio(data.audio); } else { resetToIdle(); }
       } else if (data.text) {
-        showReply(data.text);
+        addToHistory('assistant', data.text);
+        appendBubble('assistant', data.text);
         if (data.audio) { playAudio(data.audio); } else { resetToIdle(); }
       } else {
         resetToIdle();
       }
     } catch (err) {
       console.error('[api] 网络错误:', err.message);
-      showError('网络错误，请检查连接');
+      showErrorBubble('网络错误，请检查连接');
       resetToIdle();
     }
   }
