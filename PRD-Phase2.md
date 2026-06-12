@@ -43,6 +43,7 @@ api/chat.js:
 ```
 
 Phase 2 在现有骨架上增量添加，不改变已有 Provider 接口。
+**handler 保持编排层角色**：只做路由和错误处理，不内联 Provider 实现细节。
 
 ---
 
@@ -102,9 +103,15 @@ TTS Provider:
 在 handler 中 LLM 返回后插入一步：
 
 ```js
-// 现有: ASR → LLM
+// 解析 body，取 history（默认 []，兼容 Phase 1）
+const { audio, frame, history = [] } = body;
+
+// ASR（不涉及 history）
 const asrResult = await transcribeAudio(audio);
-const llmResult = await chatWithVision(frame, asrResult.text);
+
+// LLM: chatWithVision 签名从 (frame, text) 扩展为 (frame, text, history=[])
+// history 在函数内部构造 messages 数组，Provider 实现不变
+const llmResult = await chatWithVision(frame, asrResult.text, history);
 
 // 新增: TTS
 const ttsResult = await synthesizeSpeech(llmResult.text);
@@ -230,6 +237,9 @@ POST /api/chat
 > `history` 可选。后端需兼容：未传 → `[]`，非数组 → 返回 400。
 
 ### 5.4 后端 LLM 消息构造
+
+> 以下逻辑在 `chatWithVision(frame, text, history)` 函数内部实现，不放在 handler 中。
+> 签名扩展为 `(frame, text, history = [])`，默认空数组兼容 Phase 1。
 
 ```js
 const messages = [{ role: 'system', content: '...' }];
