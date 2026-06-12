@@ -1,11 +1,12 @@
 // api/chat.js
-// Vercel Edge Function — 视觉对话编排（ASR + LLM 供应商可插拔）
+// Vercel Edge Function — 视觉对话编排（ASR + LLM + TTS 供应商可插拔）
 
 export const config = { runtime: 'edge' };
 
 // ── 供应商路由 ──
 const ASR_PROVIDER = process.env.ASR_PROVIDER || 'baidu';
 const LLM_PROVIDER = process.env.LLM_PROVIDER || 'dashscope';
+const TTS_PROVIDER = process.env.TTS_PROVIDER || 'baidu';
 
 let cachedBaiduToken = null;
 let baiduTokenExpiry = 0;
@@ -25,28 +26,28 @@ export default async function handler(req) {
     });
   }
   if (req.method !== 'POST') {
-    return json(405, { text: null, error: '仅支持 POST' });
+    return json(405, { text: null, audio: null, error: '仅支持 POST' });
   }
 
   // ── 解析 ──
   let body;
   try { body = await req.json(); } catch {
-    return json(400, { text: null, error: '请求格式错误，需要 JSON' });
+    return json(400, { text: null, audio: null, error: '请求格式错误，需要 JSON' });
   }
 
   const { audio, frame } = body;
 
   if (!audio || typeof audio !== 'string' || audio.length < 100) {
-    return json(400, { text: null, error: '缺少 audio 参数' });
+    return json(400, { text: null, audio: null, error: '缺少 audio 参数' });
   }
   if (audio.length > 3_000_000) {
-    return json(400, { text: null, error: '音频过大（上限 3MB base64）' });
+    return json(400, { text: null, audio: null, error: '音频过大（上限 3MB base64）' });
   }
   if (!frame || typeof frame !== 'string' || !frame.startsWith('data:image/')) {
-    return json(400, { text: null, error: '缺少 frame 参数或格式不正确' });
+    return json(400, { text: null, audio: null, error: '缺少 frame 参数或格式不正确' });
   }
   if (frame.length > 200_000) {
-    return json(400, { text: null, error: '图片过大' });
+    return json(400, { text: null, audio: null, error: '图片过大' });
   }
 
   const tTotal = Date.now();
@@ -57,10 +58,10 @@ export default async function handler(req) {
     console.log('[api] ASR 耗时', Date.now() - tASR, 'ms, text:', asrResult.text?.slice(0, 60));
 
     if (asrResult.error) {
-      return json(asrResult.status, { text: null, error: asrResult.error });
+      return json(asrResult.status, { text: null, audio: null, error: asrResult.error });
     }
     if (!asrResult.text || asrResult.text.trim().length === 0) {
-      return json(200, { text: null, error: '未识别到语音内容，请重试' });
+      return json(200, { text: null, audio: null, error: '未识别到语音内容，请重试' });
     }
 
     // ── 视觉对话 ──
@@ -68,18 +69,23 @@ export default async function handler(req) {
     const llmResult = await chatWithVision(frame, asrResult.text);
 
     if (llmResult.error) {
-      return json(llmResult.status, { text: null, error: llmResult.error });
+      return json(llmResult.status, { text: null, audio: null, error: llmResult.error });
     }
 
+    // ── TTS 语音合成 ──
+    const tTTS = Date.now();
+    const ttsResult = await synthesizeSpeech(llmResult.text);
+    console.log('[api] TTS 耗时', Date.now() - tTTS, 'ms, audio:', ttsResult.audio ? `${ttsResult.audio.length} chars` : 'null');
+
     console.log('[api] LLM 耗时', Date.now() - tLLM, 'ms, 总耗时', Date.now() - tTotal, 'ms');
-    return json(200, { text: llmResult.text, error: null });
+    return json(200, { text: llmResult.text, audio: ttsResult.audio, error: null });
 
   } catch (err) {
     if (err.name === 'AbortError') {
-      return json(500, { text: null, error: '请求超时，请重试' });
+      return json(500, { text: null, audio: null, error: '请求超时，请重试' });
     }
     console.error('[api] 异常:', err.message);
-    return json(500, { text: null, error: '服务内部错误' });
+    return json(500, { text: null, audio: null, error: '服务内部错误' });
   }
 }
 
@@ -215,6 +221,72 @@ async function llmDashScope(frame, text) {
 
   return { text: reply, error: null, status: 200 };
 }
+
+// ═══════════════════════════════════════════════
+//  TTS 接口 — synthesizeSpeech(text) → {audio: base64|null, error: string|null}
+//  新增供应商：下面加一个 ttsXxx 函数，在此 switch 加 case
+// ═══════════════════════════════════════════════
+
+async function synthesizeSpeech(text) {
+  const fn = ttsProviders[TTS_PROVIDER];
+  if (!fn) return { audio: null, error: `未知 TTS 供应商: ${TTS_PROVIDER}` };
+  try {
+    return await fn(text);
+  } catch (err) {
+    console.error('[tts] 降级:', err.message);
+    return { audio: null, error: err.message };
+  }
+}
+
+const ttsProviders = {
+  baidu: async (text) => {
+    const apiKey = process.env.ASR_API_KEY;
+    const secretKey = process.env.ASR_SECRET_KEY;
+    if (!apiKey || !secretKey) {
+      return { audio: null, error: 'TTS 未配置凭证（复用 ASR Key）' };
+    }
+
+    const token = await baiduOAuth(apiKey, secretKey);
+
+    const params = new URLSearchParams({
+      tok: token,
+      tex: text,
+      cuid: 'ai-visual-chat',
+      ctp: '1',
+      lan: 'zh',
+      spd: '5',
+      pit: '5',
+      vol: '5',
+      per: '0',
+      aue: '3',
+    });
+
+    const resp = await fetch(`https://tsn.baidu.com/text2audio?${params}`, {
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    const contentType = resp.headers.get('content-type') || '';
+
+    // 成功返回 audio/mp3
+    if (contentType.includes('audio/mp3')) {
+      const arrayBuffer = await resp.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      return { audio: btoa(binary), error: null };
+    }
+
+    // 失败返回 application/json
+    if (contentType.includes('application/json')) {
+      const errData = await resp.json().catch(() => ({}));
+      return { audio: null, error: `TTS 错误 (${errData.err_no}): ${errData.err_msg || '未知错误'}` };
+    }
+
+    // 其他情况
+    const bodyText = await resp.text().catch(() => '');
+    return { audio: null, error: `TTS 未知响应: ${bodyText.slice(0, 200)}` };
+  },
+};
 
 // ═══════════════════════════════════════════════
 //  辅助
