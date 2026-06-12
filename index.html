@@ -34,6 +34,7 @@
   let mediaRecorder = null;
   let audioChunks = [];
   let currentAudio = null;
+  let conversationHistory = [];   // { role:'user'|'assistant', text, frame? }
 
   const video = document.getElementById('video');
   const canvas = document.getElementById('canvas');
@@ -70,6 +71,26 @@
   function resetToIdle() { isProcessing = false; setButtonState('idle'); }
 
   function escapeHtml(str) { const d = document.createElement('div'); d.textContent = str; return d.innerHTML; }
+
+  // ─── 历史管理 ───
+  function addToHistory(role, text, frame) {
+    conversationHistory.push({ role, text, ...(frame ? { frame } : {}) });
+    // 保持 ≤ 3 轮（6 条）
+    while (conversationHistory.length > 6) conversationHistory.shift();
+  }
+
+  // 构建发给 API 的 history：仅最近 1 轮 user 保留 frame
+  function buildApiHistory() {
+    const apiHistory = conversationHistory.map(m => ({ ...m }));
+    let foundLastUser = false;
+    for (let i = apiHistory.length - 1; i >= 0; i--) {
+      if (apiHistory[i].role === 'user') {
+        if (!foundLastUser) { foundLastUser = true; }
+        else { apiHistory[i].frame = null; }
+      }
+    }
+    return apiHistory;
+  }
 
   // ─── TTS 播放 ───
   function playAudio(audioBase64) {
@@ -202,27 +223,41 @@
     }
   }
 
-  // ─── 发送 JSON ───
+  // ─── 发送 JSON（含 history） ───
   async function sendToAI(audioBase64, frame) {
     setButtonState('sending');
     const t0 = Date.now();
-    console.log('[api] POST JSON, audio base64 len:', audioBase64.length, 'frame len:', frame.length);
+
+    // 构建 API history（视觉记忆规则：仅最近 1 轮带帧）
+    const apiHistory = buildApiHistory();
+    console.log('[api] POST JSON, audio:', audioBase64.length, 'chars, frame:', frame.length, 'chars, history:', apiHistory.length, 'msgs');
 
     try {
       const resp = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ audio: audioBase64, frame }),
+        body: JSON.stringify({ audio: audioBase64, frame, history: apiHistory }),
       });
       const elapsed = Date.now() - t0;
       const data = await resp.json();
       console.log('[api] status:', resp.status, 'elapsed:', elapsed, 'ms, text:', data.text?.slice(0, 80), 'audio:', data.audio ? `${data.audio.length} chars` : 'null', 'error:', data.error);
 
-      if (resp.ok && data.text) {
+      if (!resp.ok || data.error) {
+        showError(data.error || '请求失败');
+        resetToIdle();
+        return;
+      }
+
+      if (data.text && data.userText) {
+        // 成功轮次加入历史
+        addToHistory('user', data.userText, frame);
+        addToHistory('assistant', data.text);
+        showReply(data.text);
+        if (data.audio) { playAudio(data.audio); } else { resetToIdle(); }
+      } else if (data.text) {
         showReply(data.text);
         if (data.audio) { playAudio(data.audio); } else { resetToIdle(); }
       } else {
-        showError(data.error || '请求失败');
         resetToIdle();
       }
     } catch (err) {
