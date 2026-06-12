@@ -35,7 +35,7 @@ export default async function handler(req) {
     return json(400, { text: null, audio: null, error: '请求格式错误，需要 JSON' });
   }
 
-  const { audio, frame } = body;
+  const { audio, frame, history } = body;
 
   if (!audio || typeof audio !== 'string' || audio.length < 100) {
     return json(400, { text: null, audio: null, error: '缺少 audio 参数' });
@@ -48,6 +48,16 @@ export default async function handler(req) {
   }
   if (frame.length > 200_000) {
     return json(400, { text: null, audio: null, error: '图片过大' });
+  }
+
+  // history 校验：可选字段，必须是数组
+  const conversationHistory = Array.isArray(history) ? history : [];
+  if (history !== undefined && history !== null && !Array.isArray(history)) {
+    return json(400, { text: null, audio: null, error: 'history 必须是数组' });
+  }
+  // 后端防御性截断（最多 12 条 = 6 轮）
+  if (conversationHistory.length > 12) {
+    conversationHistory.splice(0, conversationHistory.length - 12);
   }
 
   const tTotal = Date.now();
@@ -66,7 +76,7 @@ export default async function handler(req) {
 
     // ── 视觉对话 ──
     const tLLM = Date.now();
-    const llmResult = await chatWithVision(frame, asrResult.text);
+    const llmResult = await chatWithVision(frame, asrResult.text, conversationHistory);
 
     if (llmResult.error) {
       return json(llmResult.status, { text: null, audio: null, error: llmResult.error });
@@ -78,7 +88,7 @@ export default async function handler(req) {
     console.log('[api] TTS 耗时', Date.now() - tTTS, 'ms, audio:', ttsResult.audio ? `${ttsResult.audio.length} chars` : 'null');
 
     console.log('[api] LLM 耗时', Date.now() - tLLM, 'ms, 总耗时', Date.now() - tTotal, 'ms');
-    return json(200, { text: llmResult.text, audio: ttsResult.audio, error: null });
+    return json(200, { text: llmResult.text, userText: asrResult.text, audio: ttsResult.audio, error: null });
 
   } catch (err) {
     if (err.name === 'AbortError') {
@@ -163,20 +173,20 @@ async function baiduOAuth(apiKey, secretKey) {
 }
 
 // ═══════════════════════════════════════════════
-//  LLM 接口 — chatWithVision(frame, text) → {text, error, status}
+//  LLM 接口 — chatWithVision(frame, text, history=[]) → {text, error, status}
 //  新增供应商：下面加一个 llmXxx 函数，在此 switch 加 case
 // ═══════════════════════════════════════════════
 
-async function chatWithVision(frame, text) {
+async function chatWithVision(frame, text, history = []) {
   switch (LLM_PROVIDER) {
     case 'dashscope':
-      return llmDashScope(frame, text);
+      return llmDashScope(frame, text, history);
     default:
       return { text: null, error: `未知 LLM 供应商: ${LLM_PROVIDER}`, status: 500 };
   }
 }
 
-async function llmDashScope(frame, text) {
+async function llmDashScope(frame, text, history = []) {
   const apiKey = process.env.LLM_API_KEY;
   if (!apiKey) {
     return { text: null, error: '服务未配置 LLM Key', status: 500 };
@@ -190,18 +200,7 @@ async function llmDashScope(frame, text) {
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({
       model,
-      messages: [
-        { role: 'system', content: [
-          '你是视觉对话助手。用户给你一张摄像头画面和一个问题。',
-          '结合画面简洁回答。150字以内，口语化，中文。',
-          '不编造不存在的内容。不确定时诚实说明。',
-          '不需要"我看到了..."开场白，直接回答。',
-        ].join(' ') },
-        { role: 'user', content: [
-          { type: 'image_url', image_url: { url: frame } },
-          { type: 'text', text },
-        ] },
-      ],
+      messages: buildMessages(frame, text, history),
       max_tokens: 300, temperature: 0.7,
     }),
     signal: AbortSignal.timeout(20_000),
@@ -220,6 +219,41 @@ async function llmDashScope(frame, text) {
   }
 
   return { text: reply, error: null, status: 200 };
+}
+
+// ── 构造 LLM messages（含视觉记忆） ──
+function buildMessages(frame, text, history) {
+  const messages = [{ role: 'system', content: [
+    '你是视觉对话助手。用户给你一张摄像头画面和一个问题。',
+    '结合画面简洁回答。150字以内，口语化，中文。',
+    '不编造不存在的内容。不确定时诚实说明。',
+    '不需要"我看到了..."开场白，直接回答。',
+  ].join(' ') }];
+
+  for (const h of history) {
+    if (h.role === 'user' && h.frame) {
+      messages.push({
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: h.frame } },
+          { type: 'text', text: h.text },
+        ],
+      });
+    } else if (h.role === 'user' || h.role === 'assistant') {
+      messages.push({ role: h.role, content: h.text });
+    }
+  }
+
+  // 当前轮（总是带帧）
+  messages.push({
+    role: 'user',
+    content: [
+      { type: 'image_url', image_url: { url: frame } },
+      { type: 'text', text },
+    ],
+  });
+
+  return messages;
 }
 
 // ═══════════════════════════════════════════════
