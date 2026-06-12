@@ -29,36 +29,17 @@ export default async function handler(req) {
     return json(405, { text: null, audio: null, error: '仅支持 POST' });
   }
 
-  // ── 解析 ──
+  // ── 解析 & 校验 ──
   let body;
   try { body = await req.json(); } catch {
     return json(400, { text: null, audio: null, error: '请求格式错误，需要 JSON' });
   }
 
-  const { audio, frame, history } = body;
-
-  if (!audio || typeof audio !== 'string' || audio.length < 100) {
-    return json(400, { text: null, audio: null, error: '缺少 audio 参数' });
+  const parsed = parseAndValidate(body);
+  if (!parsed.valid) {
+    return json(400, { text: null, audio: null, error: parsed.error });
   }
-  if (audio.length > 3_000_000) {
-    return json(400, { text: null, audio: null, error: '音频过大（上限 3MB base64）' });
-  }
-  if (!frame || typeof frame !== 'string' || !frame.startsWith('data:image/')) {
-    return json(400, { text: null, audio: null, error: '缺少 frame 参数或格式不正确' });
-  }
-  if (frame.length > 200_000) {
-    return json(400, { text: null, audio: null, error: '图片过大' });
-  }
-
-  // history 校验：可选字段，必须是数组
-  const conversationHistory = Array.isArray(history) ? history : [];
-  if (history !== undefined && history !== null && !Array.isArray(history)) {
-    return json(400, { text: null, audio: null, error: 'history 必须是数组' });
-  }
-  // 后端防御性截断（最多 12 条 = 6 轮）
-  if (conversationHistory.length > 12) {
-    conversationHistory.splice(0, conversationHistory.length - 12);
-  }
+  const { audio, frame, history: conversationHistory } = parsed.data;
 
   const tTotal = Date.now();
   try {
@@ -100,17 +81,18 @@ export default async function handler(req) {
 }
 
 // ═══════════════════════════════════════════════
-//  ASR 接口 — transcribeAudio(audioBase64) → {text, error, status}
-//  新增供应商：下面加一个 asrXxx 函数，在此 switch 加 case
+//  ASR Provider 注册表 — transcribeAudio(audio) → {text, error, status}
+//  新增供应商：下面加一个 asrXxx 函数，在此对象加一条
 // ═══════════════════════════════════════════════
 
+const asrProviders = {
+  baidu: asrBaidu,
+};
+
 async function transcribeAudio(audioBase64) {
-  switch (ASR_PROVIDER) {
-    case 'baidu':
-      return asrBaidu(audioBase64);
-    default:
-      return { text: null, error: `未知 ASR 供应商: ${ASR_PROVIDER}`, status: 500 };
-  }
+  const fn = asrProviders[ASR_PROVIDER];
+  if (!fn) return { text: null, error: `未知 ASR 供应商: ${ASR_PROVIDER}`, status: 500 };
+  return fn(audioBase64);
 }
 
 async function asrBaidu(audioBase64) {
@@ -173,17 +155,18 @@ async function baiduOAuth(apiKey, secretKey) {
 }
 
 // ═══════════════════════════════════════════════
-//  LLM 接口 — chatWithVision(frame, text, history=[]) → {text, error, status}
-//  新增供应商：下面加一个 llmXxx 函数，在此 switch 加 case
+//  LLM Provider 注册表 — chatWithVision(frame,text,history) → {text,error,status}
+//  新增供应商：下面加一个 llmXxx 函数，在此对象加一条
 // ═══════════════════════════════════════════════
 
+const llmProviders = {
+  dashscope: llmDashScope,
+};
+
 async function chatWithVision(frame, text, history = []) {
-  switch (LLM_PROVIDER) {
-    case 'dashscope':
-      return llmDashScope(frame, text, history);
-    default:
-      return { text: null, error: `未知 LLM 供应商: ${LLM_PROVIDER}`, status: 500 };
-  }
+  const fn = llmProviders[LLM_PROVIDER];
+  if (!fn) return { text: null, error: `未知 LLM 供应商: ${LLM_PROVIDER}`, status: 500 };
+  return fn(frame, text, history);
 }
 
 async function llmDashScope(frame, text, history = []) {
@@ -337,6 +320,38 @@ const ttsProviders = {
     return { audio: null, error: `TTS 未知响应: ${bodyText.slice(0, 200)}` };
   },
 };
+
+// ═══════════════════════════════════════════════
+//  请求校验
+// ═══════════════════════════════════════════════
+
+function parseAndValidate(body) {
+  if (!body || typeof body !== 'object') {
+    return { valid: false, error: '请求格式错误，需要 JSON' };
+  }
+
+  if (!body.audio || typeof body.audio !== 'string' || body.audio.length < 100) {
+    return { valid: false, error: '缺少 audio 参数' };
+  }
+  if (body.audio.length > 3_000_000) {
+    return { valid: false, error: '音频过大（上限 3MB base64）' };
+  }
+
+  if (!body.frame || typeof body.frame !== 'string' || !body.frame.startsWith('data:image/')) {
+    return { valid: false, error: '缺少 frame 参数或格式不正确' };
+  }
+  if (body.frame.length > 200_000) {
+    return { valid: false, error: '图片过大' };
+  }
+
+  const history = Array.isArray(body.history) ? body.history : [];
+  // 防御性截断（最多 12 条 = 6 轮）
+  if (history.length > 12) {
+    history.splice(0, history.length - 12);
+  }
+
+  return { valid: true, data: { audio: body.audio, frame: body.frame, history } };
+}
 
 // ═══════════════════════════════════════════════
 //  辅助
