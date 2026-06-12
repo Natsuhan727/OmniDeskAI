@@ -1,0 +1,199 @@
+// js/app.js
+// 应用主模块 — 状态管理、事件绑定、对话流程
+
+import { webmToPcmBase64 } from './audio-converter.js';
+import { settings, initSettingsPanel } from './settings.js';
+import { appendBubble, showErrorBubble } from './ui.js';
+import { streamChat, chatNormal } from './chat-api.js';
+
+// ── 全局状态 ──
+let stream = null;
+let isProcessing = false;
+let mediaRecorder = null;
+let audioChunks = [];
+let currentAudio = null;
+let conversationHistory = [];
+
+// ── DOM 引用 ──
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const talkBtn = document.getElementById('talkBtn');
+const hint = document.getElementById('hint');
+
+// ── 按钮状态 ──
+function setButtonState(state) {
+  const states = {
+    idle:    { text: '🎤 按住说话', cls: 'bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white' },
+    recording: { text: '🔴 录音中...松开发送', cls: 'bg-red-600 hover:bg-red-500 active:bg-red-700 text-white' },
+    sending: { text: '⏳ AI 思考中...', cls: 'bg-gray-600 text-gray-300 cursor-not-allowed' },
+    speaking: { text: '🔊 AI 回复中...（点击打断）', cls: 'bg-green-600 hover:bg-green-500 active:bg-green-700 text-white cursor-pointer' },
+  };
+  const s = states[state];
+  talkBtn.textContent = s.text;
+  talkBtn.className = 'w-full py-4 rounded-xl text-lg font-semibold select-none transition-colors duration-200 ' + s.cls;
+}
+
+function resetToIdle() { isProcessing = false; setButtonState('idle'); }
+
+// ── 历史管理 ──
+function addToHistory(role, text, frame) {
+  conversationHistory.push({ role, text, ...(frame ? { frame } : {}) });
+  while (conversationHistory.length > 6) conversationHistory.shift();
+}
+
+function buildApiHistory() {
+  const apiHistory = conversationHistory.map(m => ({ ...m }));
+  let foundLastUser = false;
+  for (let i = apiHistory.length - 1; i >= 0; i--) {
+    if (apiHistory[i].role === 'user') {
+      if (!foundLastUser) { foundLastUser = true; }
+      else { apiHistory[i].frame = null; }
+    }
+  }
+  return apiHistory;
+}
+
+// ── TTS 播放 ──
+function playAudio(audioBase64) {
+  if (!audioBase64 || !settings.ttsEnabled) return;
+  setButtonState('speaking');
+  currentAudio = new Audio('data:audio/mp3;base64,' + audioBase64);
+  currentAudio.onended = () => { currentAudio = null; resetToIdle(); };
+  currentAudio.onerror = () => { currentAudio = null; resetToIdle(); };
+  currentAudio.play().catch(() => { currentAudio = null; resetToIdle(); });
+}
+
+// ── 发送（流式优先，失败降级非流式） ──
+async function sendToAI(audioBase64, frame) {
+  setButtonState('sending');
+  const t0 = Date.now();
+  const apiHistory = buildApiHistory();
+  console.log('[api] audio:', audioBase64.length, 'chars, frame:', frame.length, 'chars, history:', apiHistory.length, 'msgs');
+
+  try {
+    const { userText, text, audio } = await streamChat(audioBase64, frame, apiHistory);
+    console.log('[api] stream elapsed:', Date.now() - t0, 'ms, text:', text?.slice(0, 80));
+    addToHistory('user', userText, frame);
+    addToHistory('assistant', text);
+    if (audio) { playAudio(audio); } else { resetToIdle(); }
+  } catch (streamErr) {
+    console.error('[stream] 降级非流式:', streamErr.message);
+    try {
+      const data = await chatNormal(audioBase64, frame, apiHistory);
+      console.log('[api] fallback elapsed:', Date.now() - t0, 'ms, text:', data.text?.slice(0, 80));
+      if (data.text && data.userText) {
+        addToHistory('user', data.userText, frame);
+        addToHistory('assistant', data.text);
+        appendBubble('user', data.userText, frame);
+        appendBubble('assistant', data.text);
+        if (data.audio) { playAudio(data.audio); } else { resetToIdle(); }
+      } else if (data.text) {
+        addToHistory('assistant', data.text);
+        appendBubble('assistant', data.text);
+        if (data.audio) { playAudio(data.audio); } else { resetToIdle(); }
+      } else {
+        resetToIdle();
+      }
+    } catch (fallbackErr) {
+      console.error('[api] 降级也失败:', fallbackErr.message);
+      showErrorBubble(fallbackErr.message || '请求失败');
+      resetToIdle();
+    }
+  }
+}
+
+// ── 按下（含打断逻辑） ──
+function onButtonDown(e) {
+  e.preventDefault();
+
+  if (currentAudio && !currentAudio.paused) {
+    currentAudio.pause();
+    currentAudio = null;
+    resetToIdle();
+    console.log('[tts] 用户打断播放');
+    return;
+  }
+
+  if (isProcessing || !stream) return;
+  isProcessing = true;
+  setButtonState('recording');
+  audioChunks = [];
+
+  const audioTrack = stream.getAudioTracks()[0];
+  if (!audioTrack) { showErrorBubble('未检测到麦克风'); resetToIdle(); return; }
+  const audioStream = new MediaStream([audioTrack]);
+
+  try {
+    mediaRecorder = new MediaRecorder(audioStream, { mimeType: 'audio/webm' });
+  } catch (err) {
+    mediaRecorder = new MediaRecorder(audioStream);
+  }
+  console.log('[rec] MediaRecorder started, mimeType:', mediaRecorder.mimeType);
+
+  mediaRecorder.ondataavailable = function(e) { if (e.data.size > 0) audioChunks.push(e.data); };
+  mediaRecorder.onerror = function(e) { console.error('[rec] error:', e.error); showErrorBubble('录音出错'); resetToIdle(); };
+
+  mediaRecorder.onstop = async function() {
+    const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+    console.log('[rec] stopped, blob size:', audioBlob.size, 'chunks:', audioChunks.length);
+
+    if (audioBlob.size < 1000) { showErrorBubble('未检测到语音，请重试'); resetToIdle(); return; }
+
+    let audioBase64;
+    try {
+      console.log('[conv] 开始音频转换...');
+      const result = await webmToPcmBase64(audioBlob);
+      audioBase64 = result.base64;
+      console.log('[conv] 转换完成, base64:', audioBase64.length);
+    } catch (err) {
+      console.error('[conv] 转换失败:', err.message);
+      showErrorBubble('音频处理失败，请重试');
+      resetToIdle();
+      return;
+    }
+
+    ctx.drawImage(video, 0, 0, 640, 480);
+    const frame = canvas.toDataURL('image/jpeg', settings.frameQuality);
+    console.log('[frame] captured, length:', frame.length);
+
+    await sendToAI(audioBase64, frame);
+  };
+
+  mediaRecorder.start();
+}
+
+function onButtonUp(e) {
+  e.preventDefault();
+  if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
+  try { mediaRecorder.stop(); } catch (err) {}
+}
+
+// ── 页面初始化 ──
+async function init() {
+  console.log('[init] 页面加载');
+  if (!navigator.mediaDevices?.getUserMedia) {
+    hint.textContent = '⚠️ 请使用 Chrome 浏览器'; hint.className = 'text-xs text-red-400';
+    talkBtn.disabled = true; return;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: true });
+    console.log('[init] getUserMedia 成功, 音频轨道:', stream.getAudioTracks().length);
+    stream.getAudioTracks().forEach((t, i) => console.log(`[init]  音频#${i}: "${t.label}" readyState=${t.readyState}`));
+    video.srcObject = stream;
+    hint.textContent = '提示：请使用 Chrome 浏览器'; hint.className = 'text-xs text-gray-500';
+  } catch (err) {
+    console.error('[init] getUserMedia 失败:', err.message);
+    hint.textContent = '⚠️ 需要摄像头和麦克风权限'; hint.className = 'text-xs text-red-400';
+    talkBtn.disabled = true; return;
+  }
+  talkBtn.addEventListener('mousedown', onButtonDown);
+  talkBtn.addEventListener('mouseup', onButtonUp);
+  talkBtn.addEventListener('mouseleave', onButtonUp);
+  talkBtn.addEventListener('touchstart', onButtonDown, { passive: false });
+  talkBtn.addEventListener('touchend', onButtonUp);
+  initSettingsPanel();
+  console.log('[init] 就绪');
+}
+
+init();
