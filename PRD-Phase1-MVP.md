@@ -1,6 +1,6 @@
 ---
 title: PRD - Phase 1 MVP
-project: 七牛云AI训练营 - AI视觉对话助手
+project: AI 视觉对话助手
 phase: 1
 status: ready-to-build
 created: 2026-06-12
