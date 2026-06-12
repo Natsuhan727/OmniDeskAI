@@ -1,11 +1,18 @@
 // api/chat.js
-// Vercel Edge Function — 百度 ASR + DashScope LLM
+// Vercel Edge Function — 视觉对话编排（ASR + LLM 供应商可插拔）
 
 export const config = { runtime: 'edge' };
 
-// ── Token 缓存（module-level，跨 warm start 复用） ──
-let cachedToken = null;
-let tokenExpiry = 0;
+// ── 供应商路由 ──
+const ASR_PROVIDER = process.env.ASR_PROVIDER || 'baidu';
+const LLM_PROVIDER = process.env.LLM_PROVIDER || 'dashscope';
+
+let cachedBaiduToken = null;
+let baiduTokenExpiry = 0;
+
+// ═══════════════════════════════════════════════
+//  Handler — 编排层（不感知供应商细节）
+// ═══════════════════════════════════════════════
 
 export default async function handler(req) {
   if (req.method === 'OPTIONS') {
@@ -21,13 +28,13 @@ export default async function handler(req) {
     return json(405, { text: null, error: '仅支持 POST' });
   }
 
-  // ── 解析 JSON ──
+  // ── 解析 ──
   let body;
   try { body = await req.json(); } catch {
     return json(400, { text: null, error: '请求格式错误，需要 JSON' });
   }
 
-  const { audio, pcmLen, frame } = body;
+  const { audio, frame } = body;
 
   if (!audio || typeof audio !== 'string' || audio.length < 100) {
     return json(400, { text: null, error: '缺少 audio 参数' });
@@ -35,7 +42,6 @@ export default async function handler(req) {
   if (audio.length > 3_000_000) {
     return json(400, { text: null, error: '音频过大（上限 3MB base64）' });
   }
-  const dataLen = pcmLen || Math.round(audio.length * 0.75);
   if (!frame || typeof frame !== 'string' || !frame.startsWith('data:image/')) {
     return json(400, { text: null, error: '缺少 frame 参数或格式不正确' });
   }
@@ -43,146 +49,177 @@ export default async function handler(req) {
     return json(400, { text: null, error: '图片过大' });
   }
 
-  const dashKey = process.env.LLM_API_KEY;
-  if (!dashKey) {
-    return json(500, { text: null, error: '服务未配置 DashScope Key' });
-  }
-
   const tTotal = Date.now();
   try {
-
-    // ── Step 1: 百度 ASR ──
-    const t1 = Date.now();
-    const bdApiKey = process.env.BAIDU_API_KEY;
-    const bdSecret = process.env.BAIDU_SECRET_KEY;
-
-    if (!bdApiKey || !bdSecret) {
-      return json(500, { text: null, error: '服务未配置百度语音 Key' });
-    }
-
-    const tOAuth = Date.now();
-    const token = await getBaiduToken(bdApiKey, bdSecret);
-    console.log('[api] 百度OAuth 耗时', Date.now() - tOAuth, 'ms');
-
+    // ── 语音识别 ──
     const tASR = Date.now();
-    const text = await baiduASR(token, audio, dataLen);
-    console.log('[api] 百度ASR 耗时', Date.now() - tASR, 'ms, text:', text?.slice(0, 60));
+    const asrResult = await transcribeAudio(audio);
+    console.log('[api] ASR 耗时', Date.now() - tASR, 'ms, text:', asrResult.text?.slice(0, 60));
 
-    if (!text || text.trim().length === 0) {
+    if (asrResult.error) {
+      return json(asrResult.status, { text: null, error: asrResult.error });
+    }
+    if (!asrResult.text || asrResult.text.trim().length === 0) {
       return json(200, { text: null, error: '未识别到语音内容，请重试' });
     }
 
-    // ── Step 2: DashScope LLM ──
-    const t2 = Date.now();
-    const baseUrl = process.env.LLM_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
-    const model = process.env.LLM_MODEL || 'qwen-vl-plus';
+    // ── 视觉对话 ──
+    const tLLM = Date.now();
+    const llmResult = await chatWithVision(frame, asrResult.text);
 
-    const resp = await fetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${dashKey}` },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: [
-            '你是视觉对话助手。用户给你一张摄像头画面和一个问题。',
-            '结合画面简洁回答。150字以内，口语化，中文。',
-            '不编造不存在的内容。不确定时诚实说明。',
-            '不需要"我看到了..."开场白，直接回答。',
-          ].join(' ') },
-          { role: 'user', content: [
-            { type: 'image_url', image_url: { url: frame } },
-            { type: 'text', text },
-          ] },
-        ],
-        max_tokens: 300, temperature: 0.7,
-      }),
-      signal: AbortSignal.timeout(20_000),
-    });
-
-    if (!resp.ok) {
-      const errText = await resp.text().catch(() => '');
-      console.error('[api] LLM error:', resp.status, errText.slice(0, 200));
-      return json(500, { text: null, error: `LLM 错误 (${resp.status})` });
+    if (llmResult.error) {
+      return json(llmResult.status, { text: null, error: llmResult.error });
     }
 
-    const llmData = await resp.json();
-    const reply = llmData.choices?.[0]?.message?.content;
-    if (!reply) {
-      return json(500, { text: null, error: 'LLM 返回为空' });
-    }
-
-    console.log('[api] LLM 耗时', Date.now() - t2, 'ms, 总耗时', Date.now() - tTotal, 'ms');
-    return json(200, { text: reply, error: null });
+    console.log('[api] LLM 耗时', Date.now() - tLLM, 'ms, 总耗时', Date.now() - tTotal, 'ms');
+    return json(200, { text: llmResult.text, error: null });
 
   } catch (err) {
-    const totalElapsed = Date.now() - tTotal;
     if (err.name === 'AbortError') {
-      console.error('[api] 超时, 已耗时', totalElapsed, 'ms');
-      return json(500, { text: null, error: `请求超时 (${totalElapsed}ms)，请重试` });
+      return json(500, { text: null, error: '请求超时，请重试' });
     }
-    console.error('[api] 异常, 已耗时', totalElapsed, 'ms:', err.message);
-    return json(500, { text: null, error: err.message });
+    console.error('[api] 异常:', err.message);
+    return json(500, { text: null, error: '服务内部错误' });
   }
 }
 
-// ── 百度 OAuth Token（缓存 29 天） ──
-async function getBaiduToken(apiKey, secretKey) {
-  if (cachedToken && Date.now() < tokenExpiry) {
-    console.log('[baidu] 使用缓存 token');
-    return cachedToken;
+// ═══════════════════════════════════════════════
+//  ASR 接口 — transcribeAudio(audioBase64) → {text, error, status}
+//  新增供应商：下面加一个 asrXxx 函数，在此 switch 加 case
+// ═══════════════════════════════════════════════
+
+async function transcribeAudio(audioBase64) {
+  switch (ASR_PROVIDER) {
+    case 'baidu':
+      return asrBaidu(audioBase64);
+    default:
+      return { text: null, error: `未知 ASR 供应商: ${ASR_PROVIDER}`, status: 500 };
   }
+}
+
+async function asrBaidu(audioBase64) {
+  const apiKey = process.env.ASR_API_KEY;
+  const secretKey = process.env.ASR_SECRET_KEY;
+  if (!apiKey || !secretKey) {
+    return { text: null, error: '服务未配置 ASR Key', status: 500 };
+  }
+
+  const dataLen = Math.round(audioBase64.length * 0.75);
+
+  async function call(token) {
+    const resp = await fetch('https://vop.baidu.com/server_api', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ format: 'pcm', rate: 16000, dev_pid: 1537, channel: 1, token, cuid: 'ai-visual-chat', len: dataLen, speech: audioBase64 }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    const data = await resp.json();
+
+    if (data.err_no === 0) {
+      const text = Array.isArray(data.result) ? data.result.join('') : (data.result || '');
+      return { text, error: null, status: 200, retry: false };
+    }
+    if (data.err_no === 110 || data.err_no === 111) {
+      return { text: null, error: null, status: 0, retry: true };
+    }
+    if (data.err_no === 3301 || data.err_no === 3307) {
+      return { text: null, error: '语音质量不佳，请重试', status: 400, retry: false };
+    }
+    return { text: null, error: `ASR 错误 (${data.err_no}): ${data.err_msg}`, status: 500, retry: false };
+  }
+
+  const token = await baiduOAuth(apiKey, secretKey);
+  let result = await call(token);
+  if (result.retry) {
+    cachedBaiduToken = null;
+    const newToken = await baiduOAuth(apiKey, secretKey);
+    result = await call(newToken);
+  }
+  return result;
+}
+
+async function baiduOAuth(apiKey, secretKey) {
+  if (cachedBaiduToken && Date.now() < baiduTokenExpiry) return cachedBaiduToken;
 
   const resp = await fetch(
     `https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id=${apiKey}&client_secret=${secretKey}`,
     { signal: AbortSignal.timeout(5_000) }
   );
 
-  if (!resp.ok) {
-    throw new Error(`百度鉴权失败 (${resp.status})`);
-  }
+  if (!resp.ok) throw new Error(`ASR 鉴权失败 (${resp.status})`);
 
   const data = await resp.json();
-  if (!data.access_token) {
-    console.error('[baidu] 鉴权响应:', JSON.stringify(data));
-    throw new Error('百度鉴权未返回 token');
-  }
+  if (!data.access_token) throw new Error('ASR 鉴权未返回 token');
 
-  cachedToken = data.access_token;
-  tokenExpiry = Date.now() + (data.expires_in - 3600) * 1000; // 提前 1 小时刷新
-  console.log('[baidu] 获取 token 成功, expires_in:', data.expires_in);
-  return cachedToken;
+  cachedBaiduToken = data.access_token;
+  baiduTokenExpiry = Date.now() + (data.expires_in - 3600) * 1000;
+  return cachedBaiduToken;
 }
 
-// ── 百度短语音识别 ──
-async function baiduASR(token, audioBase64, dataLen) {
-  const resp = await fetch('https://vop.baidu.com/server_api', {
+// ═══════════════════════════════════════════════
+//  LLM 接口 — chatWithVision(frame, text) → {text, error, status}
+//  新增供应商：下面加一个 llmXxx 函数，在此 switch 加 case
+// ═══════════════════════════════════════════════
+
+async function chatWithVision(frame, text) {
+  switch (LLM_PROVIDER) {
+    case 'dashscope':
+      return llmDashScope(frame, text);
+    default:
+      return { text: null, error: `未知 LLM 供应商: ${LLM_PROVIDER}`, status: 500 };
+  }
+}
+
+async function llmDashScope(frame, text) {
+  const apiKey = process.env.LLM_API_KEY;
+  if (!apiKey) {
+    return { text: null, error: '服务未配置 LLM Key', status: 500 };
+  }
+
+  const baseUrl = process.env.LLM_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+  const model = process.env.LLM_MODEL || 'qwen-vl-plus';
+
+  const resp = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({
-      format: 'pcm',
-      rate: 16000,
-      dev_pid: 1537,       // 中文普通话
-      channel: 1,
-      token,
-      cuid: 'ai-visual-chat',
-      len: dataLen,
-      speech: audioBase64,
+      model,
+      messages: [
+        { role: 'system', content: [
+          '你是视觉对话助手。用户给你一张摄像头画面和一个问题。',
+          '结合画面简洁回答。150字以内，口语化，中文。',
+          '不编造不存在的内容。不确定时诚实说明。',
+          '不需要"我看到了..."开场白，直接回答。',
+        ].join(' ') },
+        { role: 'user', content: [
+          { type: 'image_url', image_url: { url: frame } },
+          { type: 'text', text },
+        ] },
+      ],
+      max_tokens: 300, temperature: 0.7,
     }),
     signal: AbortSignal.timeout(20_000),
   });
 
-  const data = await resp.json();
-  console.log('[baidu] ASR 完整响应:', JSON.stringify(data).slice(0, 500));
-  console.log('[baidu] 使用 token:', token.slice(0, 10) + '...');
-
-  if (data.err_no !== 0) {
-    throw new Error(`百度 ASR 错误 (${data.err_no}): ${data.err_msg}`);
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => '');
+    console.error('[llm] error:', resp.status, errText.slice(0, 500));
+    return { text: null, error: `LLM 错误 (${resp.status}): ${errText.slice(0, 300)}`, status: 500 };
   }
 
-  return Array.isArray(data.result) ? data.result.join('') : (data.result || '');
+  const data = await resp.json();
+  const reply = data.choices?.[0]?.message?.content;
+  if (!reply) {
+    return { text: null, error: 'LLM 返回为空', status: 500 };
+  }
+
+  return { text: reply, error: null, status: 200 };
 }
 
-// ── 辅助 ──
+// ═══════════════════════════════════════════════
+//  辅助
+// ═══════════════════════════════════════════════
+
 function json(status, data) {
   return new Response(JSON.stringify(data), {
     status,

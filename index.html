@@ -126,13 +126,11 @@
 
       // ── 转换 webm → PCM 16kHz mono → base64 ──
       let audioBase64;
-      let pcmByteLen;
       try {
         console.log('[conv] 开始音频转换...');
         const result = await webmToPcmBase64(audioBlob);
         audioBase64 = result.base64;
-        pcmByteLen = result.byteLen;
-        console.log('[conv] 转换完成, base64:', audioBase64.length, 'pcm bytes:', pcmByteLen);
+        console.log('[conv] 转换完成, base64:', audioBase64.length);
       } catch (err) {
         console.error('[conv] 转换失败:', err.message);
         showError('音频处理失败，请重试');
@@ -145,7 +143,7 @@
       const frame = canvas.toDataURL('image/jpeg', 0.6);
       console.log('[frame] captured, length:', frame.length);
 
-      await sendToAI(audioBase64, pcmByteLen, frame);
+      await sendToAI(audioBase64, frame);
     };
 
     mediaRecorder.start();
@@ -163,37 +161,37 @@
     const arrayBuffer = await blob.arrayBuffer();
 
     const audioCtx = new AudioContext();
-    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-    console.log('[conv] decoded: sampleRate=', audioBuffer.sampleRate, 'channels=', audioBuffer.numberOfChannels, 'duration=', audioBuffer.duration);
+    try {
+      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+      console.log('[conv] decoded: sampleRate=', audioBuffer.sampleRate, 'channels=', audioBuffer.numberOfChannels, 'duration=', audioBuffer.duration);
 
-    // 离线重采样到 16kHz 单声道
-    const targetRate = 16000;
-    const offlineCtx = new OfflineAudioContext(1, Math.ceil(targetRate * audioBuffer.duration), targetRate);
-    const source = offlineCtx.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(offlineCtx.destination);
-    source.start(0);
-    const resampled = await offlineCtx.startRendering();
+      const targetRate = 16000;
+      const offlineCtx = new OfflineAudioContext(1, Math.ceil(targetRate * audioBuffer.duration), targetRate);
+      const source = offlineCtx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(offlineCtx.destination);
+      source.start(0);
+      const resampled = await offlineCtx.startRendering();
 
-    // Float32 → Int16 PCM
-    const floatData = resampled.getChannelData(0);
-    const pcm = new Int16Array(floatData.length);
-    for (let i = 0; i < floatData.length; i++) {
-      pcm[i] = Math.max(-32768, Math.min(32767, floatData[i] * 32768));
+      const floatData = resampled.getChannelData(0);
+      const pcm = new Int16Array(floatData.length);
+      for (let i = 0; i < floatData.length; i++) {
+        pcm[i] = Math.max(-32768, Math.min(32767, floatData[i] * 32768));
+      }
+
+      const bytes = new Uint8Array(pcm.buffer);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      const base64 = btoa(binary);
+
+      return { base64, byteLen: pcm.byteLength };
+    } finally {
+      audioCtx.close();
     }
-
-    // Int16 → Uint8 → base64
-    const bytes = new Uint8Array(pcm.buffer);
-    let binary = '';
-    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-    const base64 = btoa(binary);
-
-    audioCtx.close();
-    return { base64, byteLen: pcm.byteLength };
   }
 
   // ─── 发送 JSON ───
-  async function sendToAI(audioBase64, pcmByteLen, frame) {
+  async function sendToAI(audioBase64, frame) {
     setButtonState('sending');
     const t0 = Date.now();
     console.log('[api] POST JSON, audio base64 len:', audioBase64.length, 'frame len:', frame.length);
@@ -202,7 +200,7 @@
       const resp = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ audio: audioBase64, pcmLen: pcmByteLen, frame }),
+        body: JSON.stringify({ audio: audioBase64, frame }),
       });
       const elapsed = Date.now() - t0;
       const data = await resp.json();
