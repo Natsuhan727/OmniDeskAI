@@ -26,59 +26,41 @@ vercel --prod     # Deploy to production
 ## Architecture
 
 ```
-Browser (Chrome)                           Vercel Edge (V8 isolate)
-┌──────────────────────────┐               ┌─────────────────────┐
-│ index.html               │  POST JSON    │ api/chat.js          │
-│                          │ ────────────→ │                      │
-│ AudioContext 16kHz PCM   │  {frame,text} │ LLM 代理 (fetch)     │
-│   → WebSocket → DashScope│               │ → qwen-vl-plus      │
-│   ASR 实时识别（服务端VAD）│ ←──────────── │                      │
-│ Canvas grab (JPEG Q=60)  │  {text,error} │                      │
-└──────────────────────────┘               └─────────────────────┘
+Browser (Chrome)                               Vercel Edge (V8 isolate)
+┌──────────────────────────────┐               ┌────────────────────────┐
+│ index.html                   │  POST JSON    │ api/chat.js             │
+│                              │ ────────────→ │                         │
+│ MediaRecorder → webm blob    │  {audio,      │ 1. 百度 OAuth 取 Token  │
+│   → AudioContext 解码        │   frame}      │ 2. 百度 ASR → text      │
+│   → PCM WAV 16kHz → base64   │               │ 3. DashScope LLM → reply│
+│ Canvas → JPEG Q=60 → base64  │ ←──────────── │                         │
+└──────────────────────────────┘  {text,error} └────────────────────────┘
 ```
-
-**7 files total** — no `src/`, no framework, no extra npm packages:
 
 | File | Purpose |
 |---|---|
-| [index.html](index.html) | Frontend: video, canvas, hold-to-talk button, AI reply. Tailwind CDN. AudioContext 16kHz → WebSocket ASR. |
-| [package.json](package.json) | Only devDependency is `vite ^5.4.0`. `"type": "module"`. |
-| [vite.config.js](vite.config.js) | Dev server port 3000, output to `dist/`. |
-| [.gitignore](.gitignore) | `node_modules`, `dist` |
-| [api/chat.js](api/chat.js) | Vercel Edge Function: LLM proxy only. Native `fetch()` to OpenAI-compatible API. |
-| [vercel.json](vercel.json) | Edge Function config: 512MB memory, 30s max duration. |
-| [README.md](README.md) | Project docs for humans. |
+| [index.html](index.html) | Frontend: MediaRecorder → AudioContext 转 PCM WAV → base64 → JSON POST. Tailwind CDN. |
+| [api/chat.js](api/chat.js) | Vercel Edge Function: 百度 OAuth 鉴权 → ASR → DashScope LLM. All via native `fetch()`. |
+| [package.json](package.json) | Only devDependency `vite ^5.4.0`. |
+| [vite.config.js](vite.config.js) | Dev server port 3000. |
+| [vercel.json](vercel.json) | Edge Function: 512MB, 30s. |
 
 ## API Contract
 
-**POST /api/chat** — Content-Type: `application/json`. All responses include `Access-Control-Allow-Origin: *`.
+**POST /api/chat** — Content-Type: `application/json`.
 
 | Field | Type | Constraint |
 |---|---|---|
+| `audio` | string | base64 WAV (PCM 16kHz mono), max 3MB |
 | `frame` | string | `data:image/jpeg;base64,...`, max 200KB |
-| `text` | string | ASR 识别文字 |
-
-```
-200 OK:   { text: "AI 回复内容", error: null }
-400:      { text: null, error: "缺少 text 参数" }
-500:      { text: null, error: "AI 响应超时，请重试" }
-```
-
-## Frontend Detail (index.html)
-
-**Audio pipeline**: `getUserMedia` → `AudioContext(16000Hz)` → `ScriptProcessorNode(4096)` → Float32→Int16 PCM → WebSocket binary send
-
-**ASR**: DashScope realtime WebSocket (`wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen-asr-realtime&token=...`). Server-side VAD auto-detects speech end. `transcription.completed` → `finalText`. `session.finished` → `finish()`.
-
-**Auth**: DASHSCOPE_API_KEY hardcoded as `API_KEY` const in frontend (hackathon demo acceptable).
-
-**States**: IDLE → RECORDING (WebSocket open, PCM streaming) → SENDING (commit sent, waiting for LLM) → IDLE
 
 ## Environment Variables (Vercel)
 
 | Variable | Required | Default |
 |---|---|---|
-| `LLM_API_KEY` | **Yes** | — |
+| `LLM_API_KEY` | **Yes** | DASHSCOPE_API_KEY |
+| `BAIDU_API_KEY` | **Yes** | 百度 AI 开放平台 API Key |
+| `BAIDU_SECRET_KEY` | **Yes** | 百度 AI 开放平台 Secret Key |
 | `LLM_BASE_URL` | No | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
 | `LLM_MODEL` | No | `qwen-vl-plus` |
 
@@ -86,15 +68,13 @@ Browser (Chrome)                           Vercel Edge (V8 isolate)
 
 - **No extra npm dependencies** — Vite only. Tailwind via CDN.
 - **Backend uses native `fetch()`** — no SDKs.
-- **ASR is browser-side WebSocket** — backend only receives `{ frame, text }` JSON.
-- **AudioContext sampleRate = 16000Hz** — ScriptProcessor bufferSize = 4096.
-- **`<video>` must have `muted`** — or Chrome blocks AudioContext.
-- **AudioContext created inside `mousedown`** — satisfies browser autoplay policy.
+- **ASR = 百度短语音识别** — base64 WAV 直传，无 OSS/S3 依赖。
+- **LLM = DashScope** — OpenAI 兼容端点。
+- **前端 webm→WAV 转换** — AudioContext 解码 + OfflineAudioContext 重采样 16kHz 单声道。
+- **`<video>` must have `muted`** — or Chrome blocks audio stream.
 - **`isProcessing` lock** — prevents double-submission.
-- **New WebSocket + AudioContext per use** — never reuse.
 - **Frame**: 640×480 JPEG Q=60, max 200KB server-side.
-- **GainNode mute** (gain=0) — avoids echo when ScriptProcessor connects to destination.
-- **15s ASR timeout** — cleanup + "识别超时" if no `session.finished`.
+- **Audio silence detection**: `audioBlob.size < 1000` → "未检测到语音".
 
 ## Deployment
 
