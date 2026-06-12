@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI 视觉对话助手</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-950 text-white min-h-screen flex flex-col items-center justify-center p-4">
+
+  <!-- 页面容器：居中单列 -->
+  <div class="w-full max-w-lg flex flex-col items-center gap-4">
+
+    <!-- 标题 -->
+    <h1 class="text-2xl font-bold text-white">🤖 AI 视觉对话助手</h1>
+
+    <!-- 摄像头画面 -->
+    <div class="relative w-full bg-gray-900 rounded-xl overflow-hidden border border-gray-700" style="aspect-ratio: 4/3; max-height: 480px;">
+      <video
+        id="video"
+        class="w-full h-full object-cover"
+        autoplay
+        playsinline
+        muted
+      ></video>
+    </div>
+
+    <!-- 隐藏的 Canvas（用于抓帧） -->
+    <canvas id="canvas" width="640" height="480" class="hidden"></canvas>
+
+    <!-- AI 回复显示区 -->
+    <div
+      id="replyArea"
+      class="w-full min-h-[80px] bg-gray-900 border border-gray-700 rounded-xl p-4 text-gray-300 text-sm leading-relaxed hidden"
+    ></div>
+
+    <!-- 按住说话按钮 -->
+    <button
+      id="talkBtn"
+      class="w-full py-4 rounded-xl text-lg font-semibold select-none transition-colors duration-200 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white cursor-pointer"
+    >
+      🎤 按住说话
+    </button>
+
+    <!-- 提示信息 -->
+    <p id="hint" class="text-xs text-gray-500">提示：请使用 Chrome 浏览器</p>
+
+  </div>
+
+  <script>
+  // ─── 全局状态 ───
+  let stream = null;
+  let isProcessing = false;
+  let recognition = null;
+  let speechTimeout = null;
+
+  // ─── DOM 引用 ───
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const replyArea = document.getElementById('replyArea');
+  const talkBtn = document.getElementById('talkBtn');
+  const hint = document.getElementById('hint');
+
+  // ─── 按钮文字设置辅助函数 ───
+  function setButtonState(state) {
+    const states = {
+      idle:    { text: '🎤 按住说话', cls: 'bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white' },
+      recording: { text: '🔴 录音中...松开发送', cls: 'bg-red-600 hover:bg-red-500 active:bg-red-700 text-white' },
+      sending: { text: '⏳ AI 思考中...', cls: 'bg-gray-600 text-gray-300 cursor-not-allowed' },
+    };
+    const s = states[state];
+    talkBtn.textContent = s.text;
+    talkBtn.className = 'w-full py-4 rounded-xl text-lg font-semibold select-none transition-colors duration-200 ' + s.cls;
+  }
+
+  // ─── 显示错误（红色，3秒消失） ───
+  function showError(msg) {
+    replyArea.classList.remove('hidden');
+    replyArea.innerHTML = '<span class="text-red-400">' + escapeHtml(msg) + '</span>';
+    setTimeout(() => {
+      // 只清除错误消息，不覆盖 AI 回复
+      if (replyArea.querySelector('.text-red-400')) {
+        replyArea.classList.add('hidden');
+        replyArea.innerHTML = '';
+      }
+    }, 3000);
+  }
+
+  // ─── 显示 AI 回复 ───
+  function showReply(text) {
+    replyArea.classList.remove('hidden');
+    replyArea.innerHTML = '<p class="text-white whitespace-pre-wrap">' + escapeHtml(text) + '</p>';
+  }
+
+  // ─── 解锁按钮（回到 idle） ───
+  function resetToIdle() {
+    isProcessing = false;
+    setButtonState('idle');
+  }
+
+  // ─── HTML 转义 ───
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  // ─── 页面加载 ───
+  async function init() {
+    // 1. 检测浏览器支持
+    if (!navigator.mediaDevices?.getUserMedia) {
+      hint.textContent = '⚠️ 请使用 Chrome 浏览器（不支持摄像头访问）';
+      hint.className = 'text-xs text-red-400';
+      talkBtn.disabled = true;
+      talkBtn.className = 'w-full py-4 rounded-xl text-lg font-semibold bg-gray-700 text-gray-500 cursor-not-allowed';
+      return;
+    }
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      hint.textContent = '⚠️ 您的浏览器不支持语音识别，请使用 Chrome';
+      hint.className = 'text-xs text-red-400';
+      talkBtn.disabled = true;
+      talkBtn.className = 'w-full py-4 rounded-xl text-lg font-semibold bg-gray-700 text-gray-500 cursor-not-allowed';
+      return;
+    }
+
+    // 2. 请求摄像头 + 麦克风
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480, facingMode: 'environment' },
+        audio: true,
+      });
+      video.srcObject = stream;
+      hint.textContent = '提示：请使用 Chrome 浏览器';
+      hint.className = 'text-xs text-gray-500';
+    } catch (err) {
+      hint.textContent = '⚠️ 需要摄像头和麦克风权限，请在浏览器设置中开启';
+      hint.className = 'text-xs text-red-400';
+      talkBtn.disabled = true;
+      talkBtn.className = 'w-full py-4 rounded-xl text-lg font-semibold bg-gray-700 text-gray-500 cursor-not-allowed';
+      return;
+    }
+
+    // 3. 绑定按钮事件
+    talkBtn.addEventListener('mousedown', onButtonDown);
+    talkBtn.addEventListener('mouseup', onButtonUp);
+    talkBtn.addEventListener('mouseleave', onButtonUp); // 鼠标移出也触发停止
+    talkBtn.addEventListener('touchstart', onButtonDown, { passive: false });
+    talkBtn.addEventListener('touchend', onButtonUp);
+  }
+
+  // ─── 按钮按下：开始录音 ───
+  function onButtonDown(e) {
+    e.preventDefault();
+
+    if (isProcessing) return;
+    if (!stream) return;
+
+    isProcessing = true;
+    setButtonState('recording');
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    recognition = new SpeechRecognition();
+    recognition.lang = 'zh-CN';
+    recognition.interimResults = false;
+    recognition.continuous = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onresult = function(event) {
+      clearTimeout(speechTimeout);
+      const text = event.results[0][0].transcript;
+
+      if (!text || text.trim().length === 0) {
+        showError('未检测到语音，请重试');
+        resetToIdle();
+        return;
+      }
+
+      console.log('识别文字:', text);
+
+      // 抓帧 + 发送
+      sendToAI(text);
+    };
+
+    recognition.onerror = function(event) {
+      clearTimeout(speechTimeout);
+      let msg = '语音识别失败';
+      if (event.error === 'not-allowed') {
+        msg = '麦克风权限未授权';
+      } else if (event.error === 'no-speech') {
+        msg = '未检测到语音，请重试';
+      } else if (event.error === 'network') {
+        msg = '语音识别网络错误，请检查网络连接';
+      } else if (event.error === 'aborted') {
+        // 用户主动停止，不算错误
+        resetToIdle();
+        return;
+      }
+      showError(msg);
+      resetToIdle();
+    };
+
+    recognition.onend = function() {
+      clearTimeout(speechTimeout);
+      // 如果 onresult 还没触发 → 用户没说话
+      if (isProcessing && talkBtn.textContent.includes('录音中')) {
+        showError('未检测到语音，请重试');
+        resetToIdle();
+      }
+    };
+
+    // 3 秒超时：如果 onresult 3 秒内没触发 → 视为用户没说话
+    speechTimeout = setTimeout(() => {
+      if (isProcessing && talkBtn.textContent.includes('录音中')) {
+        try { recognition.stop(); } catch (e) { /* ignore */ }
+        showError('未检测到语音，请重试');
+        resetToIdle();
+      }
+    }, 3000);
+
+    try {
+      recognition.start();
+    } catch (err) {
+      clearTimeout(speechTimeout);
+      showError('语音识别启动失败: ' + err.message);
+      resetToIdle();
+    }
+  }
+
+  // ─── 按钮松开：停止录音 ───
+  function onButtonUp(e) {
+    e.preventDefault();
+
+    if (!recognition) return;
+
+    try {
+      recognition.stop();
+    } catch (err) {
+      // recognition 可能已经停止了，忽略
+    }
+  }
+
+  // ─── 抓帧 + 发送到后端 ───
+  async function sendToAI(text) {
+    setButtonState('sending');
+
+    // 抓帧：从 video 绘制到 canvas
+    ctx.drawImage(video, 0, 0, 640, 480);
+    const frame = canvas.toDataURL('image/jpeg', 0.6);
+
+    console.log('frame 前50字符:', frame.slice(0, 50));
+
+    try {
+      const resp = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ frame, text }),
+      });
+
+      const data = await resp.json();
+
+      if (resp.ok && data.text) {
+        showReply(data.text);
+      } else {
+        showError(data.error || '请求失败，请重试');
+      }
+    } catch (err) {
+      showError('网络错误，请检查网络连接');
+    }
+
+    resetToIdle();
+  }
+
+  // ─── 启动 ───
+  init();
+  </script>
+
+</body>
+</html>
