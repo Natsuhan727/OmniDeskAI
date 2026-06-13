@@ -123,3 +123,61 @@ export async function chatNormal(audioBase64, frame, apiHistory) {
   if (!resp.ok || data.error) throw new Error(data.error || '请求失败');
   return data;  // { text, userText, audio, error }
 }
+
+// ── 监测流（SSE） ──
+export async function monitorStream({ frame, prevFrame, observationContext, history, personalContext }) {
+  const resp = await fetch('/api/monitor', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      frame,
+      prevFrame: prevFrame || null,
+      observationContext: observationContext || [],
+      history,
+      personalContext: personalContext || '',
+      action: 'observe',
+      llm_provider: settings.llmProvider,
+      llm_api_key: settings.llmApiKey,
+      llm_base_url: settings.llmBaseUrl || undefined,
+    }),
+  });
+
+  if (!resp.ok) throw new Error(`Monitor HTTP ${resp.status}`);
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let observation = '';
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const jsonStr = line.slice(6);
+      if (jsonStr === '[DONE]') break;
+
+      try {
+        const data = JSON.parse(jsonStr);
+        const delta = data.choices?.[0]?.delta?.content;
+        if (delta) observation += delta;
+      } catch (e) { /* skip */ }
+    }
+  }
+
+  // 处理 buffer 中剩余内容
+  if (buffer.startsWith('data: ') && buffer.slice(6) !== '[DONE]') {
+    try {
+      const data = JSON.parse(buffer.slice(6));
+      const delta = data.choices?.[0]?.delta?.content;
+      if (delta) observation += delta;
+    } catch (e) { /* skip */ }
+  }
+
+  return { observation, audio: null };
+}
