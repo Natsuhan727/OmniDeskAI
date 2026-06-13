@@ -6,6 +6,7 @@ import { settings, initSettingsPanel } from './settings.js';
 import { appendBubble, showErrorBubble, renderMessages } from './ui.js';
 import { streamChat, chatNormal } from './chat-api.js';
 import { getStorage } from './storage-backend.js';
+import { personalContext } from './personal-context.js';
 
 // ── 全局状态 ──
 let stream = null;
@@ -97,6 +98,7 @@ async function sendToAI(audioBase64, frame) {
     addToHistory('assistant', text);
     settings.hasConversed = true;
     await saveSession();
+
     if (audio) { playAudio(audio); } else { resetToIdle(); }
   } catch (streamErr) {
     console.error('[stream] 降级非流式:', streamErr.message);
@@ -111,12 +113,14 @@ async function sendToAI(audioBase64, frame) {
         addToHistory('assistant', data.text);
         settings.hasConversed = true;
         await saveSession();
+    
         appendBubble('user', data.userText, frame);
         appendBubble('assistant', data.text);
         if (data.audio) { playAudio(data.audio); } else { resetToIdle(); }
       } else if (data.text) {
         addToHistory('assistant', data.text);
         await saveSession();
+    
         appendBubble('assistant', data.text);
         if (data.audio) { playAudio(data.audio); } else { resetToIdle(); }
       } else {
@@ -226,6 +230,11 @@ async function init() {
     hint.textContent = '⚠️ 需要摄像头和麦克风权限'; hint.className = 'text-xs text-red-400';
     talkBtn.disabled = true; return;
   }
+
+  // 初始化 Personal Context
+  await personalContext.init();
+  console.log('[init] personalContext:', personalContext.get()?.profile?.name ? '已配置' : '空');
+
   talkBtn.addEventListener('mousedown', onButtonDown);
   talkBtn.addEventListener('mouseup', onButtonUp);
   talkBtn.addEventListener('mouseleave', onButtonUp);
