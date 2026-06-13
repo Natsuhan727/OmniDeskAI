@@ -42,6 +42,7 @@ export default async function handler(req) {
   // POST /api/ping — 测试连接
   if (pathname.endsWith('/ping')) return handlePing(req);
   if (pathname.endsWith('/stream')) return handleStream(req);
+  if (pathname.endsWith('/monitor')) return handleMonitor(req);
   if (pathname.endsWith('/tts')) return handleTTS(req);
   // 默认: 非流式 /api/chat（Phase 2 行为不变）
 
@@ -199,6 +200,139 @@ async function handleStream(req) {
       'Access-Control-Allow-Origin': '*',
     },
   });
+}
+
+// ═══════════════════════════════════════════════
+//  监测端点 — POST /api/monitor (SSE)
+// ═══════════════════════════════════════════════
+
+async function handleMonitor(req) {
+  let body;
+  try { body = await req.json(); } catch {
+    return json(400, { error: '请求格式错误' });
+  }
+
+  const { frame, prevFrame, observationContext, history, personalContext, action } = body;
+  if (!frame) return json(400, { error: '缺少 frame' });
+
+  const llmCfg = {
+    provider: body.llm_provider || process.env.LLM_PROVIDER || 'dashscope',
+    apiKey: body.llm_api_key || process.env.LLM_API_KEY,
+    baseUrl: body.llm_base_url || process.env.LLM_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  };
+
+  if (!llmCfg.apiKey) return json(500, { error: '未配置 LLM Key' });
+
+  const messages = buildMonitorMessages(frame, prevFrame, observationContext, history, personalContext, action);
+
+  let streamResp;
+  try {
+    streamResp = await fetch(`${llmCfg.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${llmCfg.apiKey}` },
+      body: JSON.stringify({
+        model: body.model || process.env.LLM_MODEL || 'qwen-vl-plus',
+        messages,
+        max_tokens: 100,
+        temperature: 0.3,
+        stream: true,
+      }),
+      signal: AbortSignal.timeout(25_000),
+    });
+  } catch (err) {
+    if (err.name === 'AbortError') return json(500, { error: 'LLM 超时，请重试' });
+    throw err;
+  }
+
+  if (!streamResp.ok) {
+    const errText = await streamResp.text().catch(() => '');
+    console.error('[monitor] LLM error:', streamResp.status, errText.slice(0, 300));
+    return json(streamResp.status, { error: `LLM 错误 (${streamResp.status})` });
+  }
+
+  const encoder = new TextEncoder();
+
+  const combined = new ReadableStream({
+    async start(controller) {
+      const reader = streamResp.body.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          controller.enqueue(value);
+        }
+      } finally {
+        reader.releaseLock();
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(combined, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Access-Control-Allow-Origin': '*',
+    },
+  });
+}
+
+// ── 监测消息构建 ──
+function buildMonitorMessages(frame, prevFrame, observationContext, history, personalContext, action) {
+  const systemParts = [
+    '你是实时视觉监测助手。用户开启了摄像头，你会收到画面。',
+    '你的任务是简短描述摄像头画面中的内容。20字以内，口语化，中文。',
+    '不要编造不存在的内容。直接描述你看到的，不需要"我看到了..."开场白。',
+  ];
+
+  // 注入观察上下文（"你的记忆"）
+  if (observationContext?.length) {
+    const memLines = observationContext.map(
+      o => `- (${Math.round((Date.now() - o.time) / 1000)}秒前) ${o.text}`
+    );
+    systemParts.push(`[你的记忆]\n以下是你在过去几秒内观察到的事情：\n${memLines.join('\n')}`);
+  }
+
+  // 注入 Personal Context
+  if (personalContext) {
+    const ctxPrompt = buildPersonalContextPrompt(personalContext);
+    if (ctxPrompt) systemParts.push(ctxPrompt);
+  }
+
+  const messages = [{ role: 'system', content: systemParts.join(' ') }];
+
+  // 用户问答历史（不含监测观察）
+  if (history?.length) {
+    for (const h of history.slice(-6)) {
+      if (h.role === 'user' && h.frame) {
+        messages.push({
+          role: 'user',
+          content: [
+            { type: 'image_url', image_url: { url: h.frame } },
+            { type: 'text', text: h.text || '' },
+          ],
+        });
+      } else {
+        messages.push({ role: h.role, content: h.text || '' });
+      }
+    }
+  }
+
+  // 当前帧（+ 上一帧作为对比）
+  const currentContent = [{ type: 'image_url', image_url: { url: frame } }];
+
+  if (prevFrame) {
+    // 有两帧：让 LLM 直接比较
+    currentContent.push({ type: 'image_url', image_url: { url: prevFrame } });
+    currentContent.push({ type: 'text', text: '上面第一张是当前画面，第二张是几秒前的画面。请描述你现在看到了什么。如果两张画面基本相同，回复 NO_CHANGE。' });
+  } else {
+    // 第一帧：直接描述
+    currentContent.push({ type: 'text', text: '这是摄像头当前画面。请简短描述你看到了什么。' });
+  }
+  messages.push({ role: 'user', content: currentContent });
+
+  return messages;
 }
 
 // ═══════════════════════════════════════════════
