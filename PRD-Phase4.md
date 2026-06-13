@@ -55,27 +55,47 @@ const llmKey = body.llm_api_key || process.env.LLM_API_KEY;
 
 ## 3. F1+F2+F3: 零部署配置
 
-### 3.1 设置面板改造
+### 3.1 设置面板改造（含首次配置向导）
 
-当前设置面板有 3 个控件（模型/TTS/帧质量）。Phase 4 扩展为 7 个：
+当前设置面板有 3 个控件。Phase 4 根据"是否已配置"展示两种模式：
+
+**模式 A：已配置（环境变量或之前填过）**
+
+折叠面板，和 Phase 3 界面一样。已配字段标注 ✓。
+
+**模式 B：未配置（首次打开）**
+
+自动展开面板，顶部显示"快速配置向导"而非直接展示全部字段：
 
 ```
 ┌───────────────────────────────────┐
 │ ⚙️ 设置                      ▲    │
 ├───────────────────────────────────┤
-│ ── 语音识别 (ASR) ──              │
-│ 提供商: [baidu ▼]                 │
-│ API Key:  [________________]      │
-│ Secret:   [________________]      │
+│ 👋 首次使用，请选择配置场景：     │
 │                                   │
-│ ── 对话模型 (LLM) ──              │
-│ 提供商: [dashscope ▼]             │
-│ API Key:  [________________]      │
-│ 模型:     [qwen-vl-plus      ]    │
+│ ○ 我有阿里云百炼账号              │
+│   → ASR + LLM 一个 Key            │
 │                                   │
-│ ── 语音合成 (TTS) ──              │
-│ 提供商: [baidu ▼]                 │
-│ （复用 ASR 的 Key）               │
+│ ○ 我有百度 AI 账号                │
+│   → 高质量中文语音识别            │
+│                                   │
+│ ○ 我都有                          │
+│                                   │
+│ 选择后展示对应字段：              │
+│                                   │
+│ ▸ 阿里云场景：                    │
+│   DashScope Key: [__________] [🔗]│
+│   百度 TTS Key:  [__________] [🔗]│
+│   模型:          [qwen-vl-plus]   │
+│                                   │
+│ ▸ 百度场景：                      │
+│   百度 API Key:  [__________] [🔗]│
+│   百度 Secret:   [__________]     │
+│   DashScope Key: [__________] [🔗]│
+│                                   │
+│   [🔗] = 点击弹出注册指引         │
+│                                   │
+│   [测试连接]                       │
 │                                   │
 │ ── 其他 ──                        │
 │ TTS 开关: [✓]                     │
@@ -83,11 +103,60 @@ const llmKey = body.llm_api_key || process.env.LLM_API_KEY;
 └───────────────────────────────────┘
 ```
 
-### 3.2 每个 Key 输入框的行为
+### 3.1a 场景选择器的行为
 
-- 输入框 `type="password"`（点眼睛图标切换明文）
-- 旁边有 `?` 图标 → hover 显示注册链接和指引
-- 如果环境变量已有值（从后端 API 响应获知），placeholder 显示 `已通过环境变量配置`
+- 三个单选项，默认"阿里云"（门槛最低）
+- 切换场景时动态展开/收起对应字段
+- 阿里云场景：只需 DashScope Key + 百度 Key（TTS 用）
+- 百度场景：百度 Key（ASR+TTS）+ DashScope Key（LLM）
+- "我都有"场景：展开全部字段
+
+### 3.1b "提供商"下拉
+
+- 如果一个 Provider 只有一个实现（如 LLM 只有 dashscope），**不显示下拉**——显示为说明文字"DashScope"
+- 有多个时才显示下拉（如 ASR 有 baidu + dashscope）
+- TTS 只有 baidu 时也不显示下拉
+
+### 3.1c "复用 Key"逻辑
+
+- 百度场景：TTS 复用 ASR 的百度 Key → 不显示额外 TTS Key 输入框
+- 阿里云场景：TTS 需要百度 Key → 显示独立输入框
+
+### 3.1d 测试连接按钮
+
+- 点击后发一个轻量请求：`POST /api/ping`（后端做一次最小 ASR + LLM 调用，用一段固定短音频测试）
+- 成功 → 显示绿色 ✓ "连接成功"
+- 失败 → 显示红色错误信息
+- `/api/ping` 不返回实际对话内容，只返回 `{ ok: true }` 或 `{ ok: false, error: "..." }`
+
+```js
+// api/chat.js 路由分发加一条
+if (req.method === 'POST' && url.pathname.endsWith('/ping')) return handlePing(req);
+
+async function handlePing(req) {
+  const body = await req.json();
+  const llmCfg = {
+    provider: body.llm_provider || process.env.LLM_PROVIDER || 'dashscope',
+    apiKey: body.llm_api_key || process.env.LLM_API_KEY,
+    baseUrl: body.llm_base_url || process.env.LLM_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  };
+  try {
+    // 用 1x1 像素图 + 固定短问题测试 LLM 连接
+    const result = await chatWithVision('data:image/jpeg;base64,...', 'ping', [], llmCfg);
+    return json(200, { ok: !result.error, error: result.error || null });
+  } catch (err) {
+    return json(500, { ok: false, error: err.message });
+  }
+}
+```
+
+### 3.2 字段行为细节
+
+- Key 输入框 `type="password"`，点 👁 切换明文
+- 旁边 `?` 图标 **点击**弹出注册链接和指引（移动端兼容，不依赖 hover）
+- 环境变量已配置 → placeholder 显示 `✓ 已通过环境变量配置`，输入框禁用
+- 只有一个选项的 Provider → 不显示下拉，直接显示标签文字
+- ASR 选 dashscope 时，TTS 部分显示独立 Key 输入框（不复用）
 
 ### 3.3 后端 `/api/config` 端点
 
