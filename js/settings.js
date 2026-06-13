@@ -1,19 +1,5 @@
 // js/settings.js
-// 设置单例 + Provider 元数据 + 面板动态渲染
-
-// ── Provider 元数据（新增 Provider 只需在此加一条） ──
-const PROVIDERS = {
-  asr: [
-    { id: 'baidu', name: '百度', fields: ['apiKey', 'secretKey'], link: 'https://ai.baidu.com/ai-doc/REFERENCE/Ck3dwjgn3' },
-    { id: 'dashscope', name: 'DashScope', fields: ['apiKey'], link: 'https://help.aliyun.com/zh/model-studio/getting-started/what-is-model-studio' },
-  ],
-  llm: [
-    { id: 'dashscope', name: 'DashScope', fields: ['apiKey', 'baseUrl'], link: 'https://help.aliyun.com/zh/model-studio/getting-started/what-is-model-studio' },
-  ],
-  tts: [
-    { id: 'baidu', name: '百度', fields: ['apiKey', 'secretKey'], link: 'https://ai.baidu.com/ai-doc/REFERENCE/Ck3dwjgn3' },
-  ],
-};
+// 设置单例 + 从后端获取 Provider 元数据 + 面板动态渲染
 
 // ── 设置单例 ──
 export const settings = {
@@ -48,15 +34,39 @@ export const settings = {
   set hasConversed(v) { localStorage.setItem('has_conversed', String(v)); },
 };
 
-let envConfigured = { asr: false, llm: false };
+// ── 运行时状态 ──
+let providerMeta = { asr: [], llm: [], tts: [] };
+let envConfigured = {};
+
+// ── 工具：field → settings 属性名 ──
+function fieldToProp(kind, field) {
+  if (field === 'apiKey') return kind === 'llm' ? 'llmApiKey' : 'asrApiKey';
+  if (field === 'secretKey') return 'asrSecretKey';
+  if (field === 'baseUrl') return 'llmBaseUrl';
+  return '';
+}
+
+// ── 工具：field → 环境变量名 ──
+function fieldToEnv(kind, field) {
+  if (kind === 'llm') return field === 'apiKey' ? 'LLM_API_KEY' : 'LLM_BASE_URL';
+  if (kind === 'tts') return field === 'apiKey' ? 'ASR_API_KEY' : 'ASR_SECRET_KEY';
+  return field === 'apiKey' ? 'ASR_API_KEY' : 'ASR_SECRET_KEY';
+}
 
 // ── 初始化面板 ──
 export async function initSettingsPanel() {
-  try {
-    const resp = await fetch('/api/config');
-    const data = await resp.json();
-    envConfigured = { asr: data.asr_configured, llm: data.llm_configured };
-  } catch (e) { /* 默认 false */ }
+  // 并行获取 Provider 元数据 + env 配置
+  const [provResp, cfgResp] = await Promise.allSettled([
+    fetch('/api/providers'),
+    fetch('/api/config'),
+  ]);
+
+  if (provResp.status === 'fulfilled') {
+    try { providerMeta = await provResp.value.json(); } catch (e) { /* keep default */ }
+  }
+  if (cfgResp.status === 'fulfilled') {
+    try { const d = await cfgResp.value.json(); envConfigured = d.env || {}; } catch (e) { /* keep default */ }
+  }
 
   const toggleBtn = document.getElementById('settingsToggle');
   const body = document.getElementById('settingsBody');
@@ -65,7 +75,7 @@ export async function initSettingsPanel() {
     toggleBtn.querySelector('.arrow').textContent = body.classList.contains('hidden') ? '▲' : '▼';
   });
 
-  if (!settings.asrApiKey && !settings.llmApiKey && !envConfigured.asr && !envConfigured.llm) {
+  if (!settings.asrApiKey && !settings.llmApiKey && !envConfigured.ASR_API_KEY && !envConfigured.LLM_API_KEY) {
     body.classList.remove('hidden');
   }
 
@@ -83,16 +93,16 @@ function renderAllSections() {
 function renderSection(kind, label) {
   const section = document.getElementById(kind + 'Section');
   if (!section) return;
-  const providers = PROVIDERS[kind];
+  const providers = providerMeta[kind] || [];
+  if (!providers.length) return;
+
   const currentId = settings[kind + 'Provider'];
   const provider = providers.find(p => p.id === currentId) || providers[0];
   const single = providers.length === 1;
-  const envOk = kind === 'asr' ? envConfigured.asr : envConfigured.llm;
-  const fieldLabels = { apiKey: 'API Key', secretKey: 'Secret Key', baseUrl: 'Base URL' };
 
   let html = `<p class="text-gray-500 text-xs font-medium">${label}</p>`;
 
-  // Provider 下拉（单 provider 时显示标签文字）
+  // Provider 下拉（单 provider 显示标签）
   if (single) {
     html += `<span class="text-gray-400 text-xs">提供商: ${provider.name}</span>`;
   } else {
@@ -105,15 +115,15 @@ function renderSection(kind, label) {
     html += `</select></div>`;
   }
 
-  // Key 输入框（根据 Provider.fields 动态生成）
+  // Key 输入框（每字段独立 env 检查）
   for (const field of provider.fields) {
-    const valKey = field === 'apiKey' ? (kind === 'llm' ? 'llmApiKey' : 'asrApiKey')
-                : field === 'secretKey' ? 'asrSecretKey'
-                : 'llmBaseUrl';
+    const prop = fieldToProp(kind, field);
+    const envKey = fieldToEnv(kind, field);
+    const envOk = !!envConfigured[envKey];
     const isPwd = field !== 'baseUrl';
     const disabled = envOk ? 'disabled' : '';
-    const placeholder = envOk ? '✓ 已通过环境变量配置' : (fieldLabels[field] ? '在此粘贴 ' + fieldLabels[field] : '');
-    const value = escapeAttr(String(settings[valKey] || ''));
+    const placeholder = envOk ? '✓ 已通过环境变量配置' : (field === 'apiKey' ? '在此粘贴 API Key' : field === 'secretKey' ? '在此粘贴 Secret Key' : 'https://...（可选）');
+    const value = escapeAttr(String(settings[prop] || ''));
 
     html += `<div class="flex gap-1">`;
     html += `<input type="${isPwd ? 'password' : 'text'}" id="setting_${kind}_${field}" class="flex-1 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white text-sm" placeholder="${placeholder}" value="${value}" ${disabled} />`;
@@ -121,12 +131,12 @@ function renderSection(kind, label) {
     html += `</div>`;
   }
 
-  // LLM: 模型选择器
-  if (kind === 'llm') {
+  // LLM: 模型（从 provider.meta 读取）
+  if (kind === 'llm' && provider.models?.length) {
     html += `<div class="flex items-center justify-between">`;
     html += `<span class="text-gray-400 text-xs">模型</span>`;
     html += `<select id="settingModel" class="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white text-sm">`;
-    for (const m of ['qwen-vl-plus', 'qwen-vl-max']) {
+    for (const m of provider.models) {
       html += `<option value="${m}" ${settings.model === m ? 'selected' : ''}>${m}</option>`;
     }
     html += `</select></div>`;
@@ -143,7 +153,6 @@ function renderSection(kind, label) {
     html += `</label>`;
   }
 
-  // 注册链接
   if (provider.link) {
     html += `<a href="#" class="reg-link text-blue-400 text-xs hover:underline inline-block" data-url="${provider.link}">注册指引 →</a>`;
   }
@@ -152,11 +161,14 @@ function renderSection(kind, label) {
   bindSectionEvents(kind, providers, single);
 }
 
-// ── 事件绑定 ──
+// ── 事件绑定（仅在 section 内查询） ──
 function bindSectionEvents(kind, providers, single) {
+  const section = document.getElementById(kind + 'Section');
+  if (!section) return;
+
   // Provider 切换
   if (!single) {
-    const sel = document.getElementById(`setting_${kind}_provider`);
+    const sel = section.querySelector(`#setting_${kind}_provider`);
     if (sel) sel.addEventListener('change', () => {
       settings[kind + 'Provider'] = sel.value;
       renderSection(kind, sectionLabel(kind));
@@ -167,30 +179,29 @@ function bindSectionEvents(kind, providers, single) {
   // Key 输入
   const provider = providers.find(p => p.id === settings[kind + 'Provider']) || providers[0];
   for (const field of provider.fields) {
-    const input = document.getElementById(`setting_${kind}_${field}`);
+    const input = section.querySelector(`#setting_${kind}_${field}`);
     if (!input || input.disabled) continue;
-    const valKey = field === 'apiKey' ? (kind === 'llm' ? 'llmApiKey' : 'asrApiKey')
-                : field === 'secretKey' ? 'asrSecretKey' : 'llmBaseUrl';
-    input.addEventListener('input', () => { settings[valKey] = input.value; });
+    const prop = fieldToProp(kind, field);
+    input.addEventListener('input', () => { settings[prop] = input.value; });
   }
 
   // LLM 模型
   if (kind === 'llm') {
-    const model = document.getElementById('settingModel');
+    const model = section.querySelector('#settingModel');
     if (model) model.addEventListener('change', () => { settings.model = model.value; });
   }
 
   // TTS 复用
   if (kind === 'tts') {
-    const reuseBox = document.getElementById('settingTtsReuse');
+    const reuseBox = section.querySelector('#settingTtsReuse');
     if (reuseBox) reuseBox.addEventListener('change', () => {
       settings.ttsReuseAsrKey = reuseBox.checked;
       renderSection('tts', '语音合成 (TTS)');
     });
   }
 
-  // 密码 👁
-  document.querySelectorAll('.toggle-pwd').forEach(btn => {
+  // 密码切换
+  section.querySelectorAll('.toggle-pwd').forEach(btn => {
     btn.addEventListener('click', () => {
       const input = btn.previousElementSibling;
       if (input && input.type === 'password') { input.type = 'text'; btn.textContent = '🙈'; }
@@ -199,8 +210,8 @@ function bindSectionEvents(kind, providers, single) {
   });
 
   // 注册链接
-  document.querySelectorAll('.reg-link').forEach(link => {
-    link.addEventListener('click', (e) => { e.preventDefault(); const u = link.dataset.url; if (u) window.open(u, '_blank'); });
+  section.querySelectorAll('.reg-link').forEach(link => {
+    link.addEventListener('click', e => { e.preventDefault(); const u = link.dataset.url; if (u) window.open(u, '_blank'); });
   });
 }
 
@@ -214,28 +225,36 @@ function bindStaticControls() {
   const q = document.getElementById('settingQuality'), ql = document.getElementById('settingQualityLabel');
   if (q) { q.value = settings.frameQuality; ql.textContent = Math.round(settings.frameQuality * 100) + '%'; q.addEventListener('input', () => { settings.frameQuality = parseFloat(q.value); ql.textContent = Math.round(settings.frameQuality * 100) + '%'; }); }
 
-  wireTest('testDashScope', { service: 'dashscope', llm_api_key: settings.llmApiKey });
-  wireTest('testBaidu', { service: 'baidu', asr_api_key: settings.asrApiKey, asr_secret_key: settings.asrSecretKey });
+  // 测试按钮（点击时实时读 settings，不缓存）
+  const testDash = document.getElementById('testDashScope');
+  if (testDash) testDash.addEventListener('click', async () => {
+    const btn = testDash; btn.disabled = true; btn.textContent = '⏳ 测试中...';
+    const resultEl = document.getElementById('testResult');
+    try {
+      const r = await fetch('/api/ping', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ service: 'dashscope', llm_api_key: settings.llmApiKey }) });
+      const d = await r.json();
+      resultEl.innerHTML = d.ok ? '<span class="text-green-400">✓ DashScope 连接成功</span>' : `<span class="text-red-400">✗ DashScope: ${d.error || '连接失败'}</span>`;
+    } catch (e) { resultEl.innerHTML = '<span class="text-red-400">✗ DashScope: 网络错误</span>'; }
+    btn.disabled = false; btn.textContent = '测试 DashScope';
+  });
+
+  const testBd = document.getElementById('testBaidu');
+  if (testBd) testBd.addEventListener('click', async () => {
+    const btn = testBd; btn.disabled = true; btn.textContent = '⏳ 测试中...';
+    const resultEl = document.getElementById('testResult');
+    try {
+      const r = await fetch('/api/ping', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ service: 'baidu', asr_api_key: settings.asrApiKey, asr_secret_key: settings.asrSecretKey }) });
+      const d = await r.json();
+      resultEl.innerHTML = d.ok ? '<span class="text-green-400">✓ 百度 连接成功</span>' : `<span class="text-red-400">✗ 百度: ${d.error || '连接失败'}</span>`;
+    } catch (e) { resultEl.innerHTML = '<span class="text-red-400">✗ 百度: 网络错误</span>'; }
+    btn.disabled = false; btn.textContent = '测试百度';
+  });
 
   const saveBtn = document.getElementById('saveSettings');
   if (saveBtn) saveBtn.addEventListener('click', () => {
-    const dsOk = settings.llmApiKey || envConfigured.llm;
-    const bdOk = settings.asrApiKey || envConfigured.asr;
+    const dsOk = settings.llmApiKey || envConfigured.LLM_API_KEY;
+    const bdOk = settings.asrApiKey || envConfigured.ASR_API_KEY;
     showToast(`设置已保存 — 模型: ${settings.model} | ASR: ${settings.asrProvider === 'dashscope' ? 'DashScope' : '百度'} | DashScope: ${dsOk ? '✓' : '✗'} | 百度: ${bdOk ? '✓' : '✗'} | TTS: ${settings.ttsEnabled ? '开' : '关'} | 帧: ${Math.round(settings.frameQuality * 100)}%`);
-  });
-}
-
-function wireTest(btnId, body) {
-  const btn = document.getElementById(btnId); if (!btn) return;
-  btn.addEventListener('click', async () => {
-    const resultEl = document.getElementById('testResult'), label = btnId === 'testDashScope' ? 'DashScope' : '百度';
-    btn.disabled = true; btn.textContent = '⏳ 测试中...';
-    try {
-      const r = await fetch('/api/ping', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      const d = await r.json();
-      resultEl.innerHTML = d.ok ? `<span class="text-green-400">✓ ${label} 连接成功</span>` : `<span class="text-red-400">✗ ${label}: ${d.error || '连接失败'}</span>`;
-    } catch (e) { resultEl.innerHTML = `<span class="text-red-400">✗ ${label}: 网络错误</span>`; }
-    btn.disabled = false; btn.textContent = '测试 ' + label;
   });
 }
 

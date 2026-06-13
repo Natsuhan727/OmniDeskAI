@@ -13,7 +13,7 @@ function buildBody(audioBase64, frame, apiHistory) {
     model: settings.model,
     asr_provider: settings.asrProvider,
     asr_api_key: settings.asrApiKey,
-    asr_secret_key: settings.asrSecretKey,
+    asr_secret_key: settings.asrProvider === 'baidu' ? settings.asrSecretKey : undefined,
     llm_provider: settings.llmProvider,
     llm_api_key: settings.llmApiKey,
     llm_base_url: settings.llmBaseUrl || undefined,

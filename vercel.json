@@ -9,6 +9,7 @@
     { "src": "/api/chat/stream", "dest": "/api/chat" },
     { "src": "/api/tts", "dest": "/api/chat" },
     { "src": "/api/config", "dest": "/api/chat" },
+    { "src": "/api/providers", "dest": "/api/chat" },
     { "src": "/api/ping", "dest": "/api/chat" }
   ]
 }
