@@ -52,12 +52,13 @@
       <span class="arrow">▲</span>
     </button>
     <div id="settingsBody" class="px-4 pb-3 space-y-4 text-sm hidden">
-      <!-- Provider 层由 JS 动态渲染 -->
-      <div id="asrSection" class="bg-gray-800/50 rounded-lg p-3 space-y-2"><p class="text-gray-500 text-xs">语音识别 (ASR)</p></div>
-      <div id="llmSection" class="bg-gray-800/50 rounded-lg p-3 space-y-2"><p class="text-gray-500 text-xs">对话模型 (LLM)</p></div>
-      <div id="ttsSection" class="bg-gray-800/50 rounded-lg p-3 space-y-2"><p class="text-gray-500 text-xs">语音合成 (TTS)</p></div>
+      <div id="settingsGuide" class="text-gray-500 text-xs text-center hidden"></div>
 
-      <!-- 其他 -->
+      <!-- Provider 层骨架 -->
+      <div id="asrSection" class="bg-gray-800/50 rounded-lg p-3 space-y-2 animate-pulse"><div class="h-3 bg-gray-700 rounded w-24"></div><div class="h-8 bg-gray-700 rounded"></div></div>
+      <div id="llmSection" class="bg-gray-800/50 rounded-lg p-3 space-y-2 animate-pulse"><div class="h-3 bg-gray-700 rounded w-24"></div><div class="h-8 bg-gray-700 rounded"></div></div>
+      <div id="ttsSection" class="bg-gray-800/50 rounded-lg p-3 space-y-2 animate-pulse"><div class="h-3 bg-gray-700 rounded w-24"></div><div class="h-8 bg-gray-700 rounded"></div></div>
+
       <div class="flex items-center justify-between">
         <span class="text-gray-400 text-xs">TTS 语音</span>
         <input type="checkbox" id="settingTTS" class="w-4 h-4 accent-green-500" />
@@ -70,11 +71,7 @@
         </div>
       </div>
 
-      <!-- 操作 -->
-      <div class="flex gap-2">
-        <button id="testDashScope" class="flex-1 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs transition-colors">测试 DashScope</button>
-        <button id="testBaidu" class="flex-1 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs transition-colors">测试百度</button>
-      </div>
+      <div id="testButtons" class="flex gap-2"></div>
       <button id="saveSettings" class="w-full py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs transition-colors">保存设置</button>
       <div id="testResult" class="text-xs text-center"></div>
     </div>

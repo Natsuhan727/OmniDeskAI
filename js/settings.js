@@ -77,9 +77,14 @@ export async function initSettingsPanel() {
 
   if (!settings.asrApiKey && !settings.llmApiKey && !envConfigured.ASR_API_KEY && !envConfigured.LLM_API_KEY) {
     body.classList.remove('hidden');
+    // 智能路径指引
+    const dashscopeLlm = (providerMeta.llm || []).some(p => p.id === 'dashscope');
+    const guide = document.getElementById('settingsGuide');
+    if (guide) { guide.classList.remove('hidden'); guide.textContent = dashscopeLlm ? '💡 只需填入 DashScope Key 即可开始（LLM + ASR 通用）' : '💡 请填入下方各服务的 API Key'; }
   }
 
   renderAllSections();
+  renderTestButtons();
   bindStaticControls();
 }
 
@@ -217,6 +222,37 @@ function bindSectionEvents(kind, providers, single) {
 
 function sectionLabel(k) { return { asr: '语音识别 (ASR)', llm: '对话模型 (LLM)', tts: '语音合成 (TTS)' }[k] || ''; }
 
+// ── 按能力层生成测试按钮 ──
+function renderTestButtons() {
+  const container = document.getElementById('testButtons');
+  if (!container) return;
+  const labels = { asr: 'ASR', llm: 'LLM', tts: 'TTS' };
+  let html = '';
+  for (const kind of ['asr', 'llm', 'tts']) {
+    html += `<button id="test_${kind}" class="flex-1 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs transition-colors">测试 ${labels[kind]}</button>`;
+  }
+  container.innerHTML = html;
+
+  for (const kind of ['asr', 'llm', 'tts']) {
+    const btn = document.getElementById(`test_${kind}`);
+    if (!btn) continue;
+    btn.addEventListener('click', async () => {
+      const resultEl = document.getElementById('testResult');
+      btn.disabled = true; btn.textContent = '⏳';
+      try {
+        const provider = providerMeta[kind]?.find(p => p.id === settings[kind + 'Provider']);
+        const body = { service: provider?.id || 'dashscope' };
+        if (kind === 'llm') body.llm_api_key = settings.llmApiKey;
+        else { body.asr_api_key = settings.asrApiKey; body.asr_secret_key = settings.asrSecretKey; }
+        const r = await fetch('/api/ping', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const d = await r.json();
+        resultEl.innerHTML = d.ok ? `<span class="text-green-400">✓ ${labels[kind]} 连接成功</span>` : `<span class="text-red-400">✗ ${labels[kind]}: ${d.error || '失败'}</span>`;
+      } catch (e) { resultEl.innerHTML = `<span class="text-red-400">✗ ${labels[kind]}: 网络错误</span>`; }
+      btn.disabled = false; btn.textContent = `测试 ${labels[kind]}`;
+    });
+  }
+}
+
 // ── 静态控件 ──
 function bindStaticControls() {
   const ttsCheck = document.getElementById('settingTTS');
@@ -252,9 +288,14 @@ function bindStaticControls() {
 
   const saveBtn = document.getElementById('saveSettings');
   if (saveBtn) saveBtn.addEventListener('click', () => {
-    const dsOk = settings.llmApiKey || envConfigured.LLM_API_KEY;
-    const bdOk = settings.asrApiKey || envConfigured.ASR_API_KEY;
-    showToast(`设置已保存 — 模型: ${settings.model} | ASR: ${settings.asrProvider === 'dashscope' ? 'DashScope' : '百度'} | DashScope: ${dsOk ? '✓' : '✗'} | 百度: ${bdOk ? '✓' : '✗'} | TTS: ${settings.ttsEnabled ? '开' : '关'} | 帧: ${Math.round(settings.frameQuality * 100)}%`);
+    const parts = [];
+    const asrName = (providerMeta.asr || []).find(p => p.id === settings.asrProvider)?.name || settings.asrProvider;
+    const llmName = (providerMeta.llm || []).find(p => p.id === settings.llmProvider)?.name || settings.llmProvider;
+    if (settings.asrApiKey || envConfigured.ASR_API_KEY) parts.push(`ASR: ${asrName} ✓`);
+    else parts.push(`ASR: 未配置`);
+    if (settings.llmApiKey || envConfigured.LLM_API_KEY) parts.push(`LLM: ${llmName} ✓`);
+    else parts.push(`LLM: 未配置`);
+    showToast(`✓ 设置已保存 — ${parts.join(' | ')}`);
   });
 }
 
