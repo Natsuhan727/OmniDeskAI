@@ -166,6 +166,199 @@ function addToHistory(role, text, frame) {
 
 ---
 
+## 3. 存储抽象层 (Storage Backend Interface)
+
+### 设计动机
+
+当前 PRD 默认使用 `localStorage` 作为唯一存储后端。但架构上应预留接口，允许未来接入外部专用存储方案：
+
+- **`IndexedDB`**：对话量大时（>5MB），比 localStorage 更适合
+- **`Mem0`**：语义记忆管理，自动提取+冲突解决
+- **`Vercel KV`**：云端备份 + 多设备同步
+- **自定义后端**：用户自建的记忆服务
+
+设计原则：**Provider Registry 模式**。与本项目 ASR/LLM/TTS 已有的 Provider 注册表模式一致——定义接口契约，默认实现一个，未来插拔替换。
+
+### 接口定义
+
+```js
+// js/storage-backend.js
+// StorageBackend 接口契约（抽象类，仅定义签名）
+
+/**
+ * StorageBackend 接口
+ * 
+ * 所有存储后端必须实现以下方法。
+ * 参考本项目 ASR/LLM/TTS Provider 注册表模式。
+ *
+ * @interface
+ */
+class StorageBackend {
+  /** 初始化存储（建立连接、创建表/索引等） */
+  async init() { throw new Error('Not implemented'); }
+
+  /** 读取 JSON 数据 */
+  async get(key) { throw new Error('Not implemented'); }
+
+  /** 写入 JSON 数据 */
+  async set(key, value) { throw new Error('Not implemented'); }
+
+  /** 删除数据 */
+  async delete(key) { throw new Error('Not implemented'); }
+
+  /** 列出所有 key（用于管理面板） */
+  async keys() { throw new Error('Not implemented'); }
+
+  /** 获取存储统计 */
+  async stats() { throw new Error('Not implemented'); }
+
+  /** 后端标识 */
+  get name() { throw new Error('Not implemented'); }
+  get version() { throw new Error('Not implemented'); }
+}
+```
+
+### 默认实现：localStorageBackend
+
+```js
+// js/storage-backend.js (同文件)
+// MVP 使用此实现。零依赖，同步+异步兼容。
+
+export const localStorageBackend = {
+  name: 'localStorage',
+  version: '1.0.0',
+
+  async init() {
+    // localStorage 无需初始化
+    // 检测可用性
+    try {
+      const testKey = '__omni_storage_test__';
+      localStorage.setItem(testKey, '1');
+      localStorage.removeItem(testKey);
+      return true;
+    } catch (e) {
+      throw new Error('localStorage 不可用（可能处于私密模式或配额满）');
+    }
+  },
+
+  async get(key) {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      console.error(`[storage] get(${key}) 失败:`, e.message);
+      return null;
+    }
+  },
+
+  async set(key, value) {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch (e) {
+      console.error(`[storage] set(${key}) 失败:`, e.message);
+      throw e;
+    }
+  },
+
+  async delete(key) {
+    localStorage.removeItem(key);
+  },
+
+  async keys() {
+    const result = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key?.startsWith('omni_')) result.push(key);
+    }
+    return result;
+  },
+
+  async stats() {
+    let totalBytes = 0;
+    for (const key of await this.keys()) {
+      totalBytes += (localStorage.getItem(key) || '').length * 2; // UTF-16
+    }
+    return { totalBytes, keyCount: (await this.keys()).length };
+  },
+};
+```
+
+### 注册表模式
+
+```js
+// js/storage-backend.js (同文件)
+
+// ── Provider 注册表 ──
+const storageBackends = {
+  localStorage: localStorageBackend,
+  // 未来扩展：
+  // indexedDB: indexedDBBackend,
+  // mem0: mem0Backend,
+  // vercelKV: vercelKVBackend,
+};
+
+// ── 当前使用的后端 ──
+let currentBackend = localStorageBackend;
+
+// ── 调度函数 ──
+export async function initStorage(backendName = 'localStorage', config = {}) {
+  const backend = storageBackends[backendName];
+  if (!backend) throw new Error(`未知存储后端: ${backendName}`);
+  await backend.init(config);
+  currentBackend = backend;
+  return backend;
+}
+
+export function getStorage() {
+  return currentBackend;
+}
+
+export function registerStorageBackend(name, backend) {
+  storageBackends[name] = backend;
+}
+```
+
+### Personal Context 接入存储后端
+
+```js
+// js/personal-context.js — 改造后
+
+import { getStorage } from './storage-backend.js';
+
+const STORAGE_KEY = 'omni_personal_context';
+
+export const personalContext = {
+  _data: null,
+
+  async init() {
+    const storage = getStorage();
+    const saved = await storage.get(STORAGE_KEY);
+    this._data = saved ? { ...DEFAULTS, ...saved } : { ...DEFAULTS };
+    return this._data;
+  },
+
+  async _save() {
+    const storage = getStorage();
+    await storage.set(STORAGE_KEY, this._data);
+  },
+
+  // get() / set() / update() / detectUpdates() / reset() — 同原设计
+  // 仅 _save() 方法改为 async，调用 storage.set()
+};
+```
+
+### MVP 策略
+
+| 阶段 | 行为 |
+|------|------|
+| **Phase 5 MVP** | 默认 `localStorageBackend`，无需用户选择。向后兼容——`personal-context.js` 调用方式与硬编码 localStorage 几乎一致 |
+| **Phase 5.2+** | 设置面板可选存储后端。用户可将记忆迁移到 IndexedDB（更大容量）或 Vercel KV（云端同步） |
+| **Phase 6+** | 开放注册接口。第三方可通过 `registerStorageBackend()` 接入自定义存储 |
+
+**关键设计决策**：`get/set` 方法返回 Promise（async），即使底层是同步的 localStorage。这保证未来切换到 IndexedDB/云端时不需要改调用方代码。
+
+---
+
 # 第三部分：记忆管线
 
 ## 1. 记忆注入（每条消息发送时）
@@ -472,6 +665,7 @@ Step 6: M5 AI 自动更新（P1 LLM 端点）    (~3h, 可选)
 ## 新增/修改文件清单
 
 ```
+js/storage-backend.js       (新增) — 存储抽象层（接口 + localStorage 实现 + 注册表）
 js/personal-context.js      (新增) — Personal Context 数据模型 + 规则提取
 api/personal-context.js     (新增) — LLM 记忆更新端点（可选 P1）
 js/app.js                   (修改) — 持久化对话 + 触发记忆更新
@@ -490,9 +684,14 @@ js/settings.js              (修改) — 初始化记忆面板
 
 ## 1. `js/personal-context.js` 模块
 
+> ⚠️ 注意：此模块通过 `storage-backend.js` 读写存储，不直接使用 `localStorage`。先实现 `storage-backend.js`，再实现此模块。
+
 ```js
 // js/personal-context.js
 // Personal Context — 单例。管理跨会话的用户认知数据。
+// 通过 storage-backend.js 抽象层读写存储，不直接依赖 localStorage。
+
+import { getStorage } from './storage-backend.js';
 
 const STORAGE_KEY = 'omni_personal_context';
 
@@ -509,13 +708,14 @@ const DEFAULTS = {
 export const personalContext = {
   _data: null,
 
-  // ── 初始化 ──
-  init() {
+  // ── 初始化（异步：通过 storage backend 读取） ──
+  async init() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        this._data = JSON.parse(raw);
-        // 合并默认值（处理新增字段）
+      const storage = getStorage();
+      const saved = await storage.get(STORAGE_KEY);
+      if (saved) {
+        this._data = saved;
+        // 合并默认值（处理新增字段——版本升级时）
         this._data = { ...DEFAULTS, ...this._data };
         this._data.profile = { ...DEFAULTS.profile, ...this._data.profile };
         this._data.preferences = { ...DEFAULTS.preferences, ...this._data.preferences };
@@ -530,25 +730,25 @@ export const personalContext = {
     return this._data;
   },
 
-  // ── 读取 ──
+  // ── 同步读取内存中的数据 ──
   get() { return this._data; },
 
-  // ── 完整替换 ──
-  set(data) {
+  // ── 完整替换 + 持久化 ──
+  async set(data) {
     this._data = { ...DEFAULTS, ...data };
     this._data.updatedAt = Date.now();
-    this._save();
+    await this._save();
   },
 
-  // ── 部分更新（浅合并） ──
-  update(changes) {
+  // ── 部分更新（浅合并） + 持久化 ──
+  async update(changes) {
     if (changes.profile) Object.assign(this._data.profile, changes.profile);
     if (changes.preferences) Object.assign(this._data.preferences, changes.preferences);
     if (changes.visualDomains) this._data.visualDomains = changes.visualDomains;
     if (changes.usagePatterns) Object.assign(this._data.usagePatterns, changes.usagePatterns);
     if (changes.aiNotes) this._data.aiNotes = changes.aiNotes;
     this._data.updatedAt = Date.now();
-    this._save();
+    await this._save();
   },
 
   // ── 规则提取检测 ──
@@ -582,15 +782,16 @@ export const personalContext = {
   },
 
   // ── 重置 ──
-  reset() {
+  async reset() {
     this._data = JSON.parse(JSON.stringify(DEFAULTS));
-    this._save();
+    await this._save();
   },
 
-  // ── 内部保存 ──
-  _save() {
+  // ── 内部保存（通过 storage backend） ──
+  async _save() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this._data));
+      const storage = getStorage();
+      await storage.set(STORAGE_KEY, this._data);
     } catch (e) {
       console.error('[pc] save failed:', e.message);
     }
@@ -600,19 +801,23 @@ export const personalContext = {
 
 ## 2. 修改 `js/app.js`
 
+> ⚠️ 注意：`app.js` 的 session 持久化同样通过 `storage-backend.js`，保持一致性。
+
 ```js
 // js/app.js — 变更点
 
 import { personalContext } from './personal-context.js';
+import { getStorage } from './storage-backend.js';
 
-// ── 初始化 ──
+// ── 初始化（异步） ──
 async function init() {
-  // ... 现有代码 ...
+  // ... 现有代码（getUserMedia 等）...
 
   // 恢复 Session（对话历史）
   try {
-    const sessionRaw = localStorage.getItem('omni_session');
-    if (sessionRaw) {
+    const storage = getStorage();
+    const session = await storage.get('omni_session');
+    if (session) {
       const session = JSON.parse(sessionRaw);
       conversationHistory = session.conversationHistory || [];
       // 恢复 UI
@@ -623,18 +828,19 @@ async function init() {
   } catch (e) { /* 忽略 */ }
 
   // 初始化 Personal Context
-  personalContext.init();
+  await personalContext.init();
 
   // ... 现有代码 ...
 }
 
-// ── 持久化对话 ──
-function saveSession() {
+// ── 持久化对话（通过 storage backend） ──
+async function saveSession() {
   try {
-    localStorage.setItem('omni_session', JSON.stringify({
+    const storage = getStorage();
+    await storage.set('omni_session', {
       conversationHistory,
       lastActiveAt: Date.now(),
-    }));
+    });
   } catch (e) { /* 忽略 */ }
 }
 
@@ -643,18 +849,18 @@ async function sendToAI(audioBase64, frame) {
   // ... 现有 sendToAI 代码 ...
 
   // 在 addToHistory 调用后添加：
-  saveSession();
+  await saveSession();
 
   // 触发记忆更新检测
-  tryDetectMemoryUpdate();
+  await tryDetectMemoryUpdate();
 }
 
 // ── 记忆更新检测 ──
-function tryDetectMemoryUpdate() {
+async function tryDetectMemoryUpdate() {
   const recentMessages = conversationHistory.slice(-6); // 最近 3 轮
   const updates = personalContext.detectUpdates(recentMessages);
   if (updates) {
-    personalContext.update(updates);
+    await personalContext.update(updates);
     console.log('[pc] auto-updated:', updates);
   }
 }
@@ -975,7 +1181,248 @@ async function handlePersonalContextUpdate(req) {
 
 ---
 
-# 第七部分：验收标准总览
+# 第七部分：前端-后端对齐检查 (Frontend-Backend Alignment)
+
+> **目的**：确保前端和后端在记忆系统的数据流、职责划分、接口契约上完全对齐。避免前端做了后端不管、或后端做了前端不接的问题。
+
+## 1. 数据流全景图
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         用户按下按钮说话                          │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  FRONTEND                                                        │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ① app.js: onButtonDown → MediaRecorder → audioChunks            │
+│                                                                  │
+│  ② app.js: onstop → webmToPcmBase64 → canvas.toDataURL           │
+│                                                                  │
+│  ③ chat-api.js: buildBody(audio, frame, history)                │
+│     ┌─────────────────────────────────────────┐                  │
+│     │ { audio, frame, history, model,          │                  │
+│     │   asr_provider, asr_api_key, ...,        │                  │
+│     │   personalContext: personalContext.get() │ ← M3: 读取 PC   │
+│     │ }                                        │                  │
+│     └─────────────────────────────────────────┘                  │
+│                                                                  │
+│  ④ chat-api.js: streamChat() / chatNormal() → fetch POST         │
+│                                                                  │
+├──────────────────────────────────────────────────────────────────┤
+│                          HTTP POST /api/chat                      │
+├──────────────────────────────────────────────────────────────────┤
+│  BACKEND                                                         │
+│                                                                  │
+│  ⑤ api/chat.js: handler()                                       │
+│     └→ processAudio(body, asrCfg)                                │
+│        └→ transcribeAudio(audio, asrCfg) → userText              │
+│                                                                  │
+│  ⑥ api/chat.js: buildMessages(frame, text, history, pc)         │
+│     ┌─────────────────────────────────────────┐                  │
+│     │ system = "你是视觉对话助手..."           │                  │
+│     │   + buildPersonalContextPrompt(pc)       │ ← M3: 注入 PC   │
+│     │   + history messages                     │                  │
+│     │   + current frame + text                 │                  │
+│     └─────────────────────────────────────────┘                  │
+│                                                                  │
+│  ⑦ api/chat.js: chatWithVision(frame, text, history, llmCfg)    │
+│     └→ llmDashScope → fetch LLM API                              │
+│                                                                  │
+│  ⑧ api/chat.js: synthesizeSpeech(reply, ttsCfg)                 │
+│                                                                  │
+│  ⑨ api/chat.js: return { text, userText, audio }                │
+│                                                                  │
+├──────────────────────────────────────────────────────────────────┤
+│                          HTTP Response                            │
+├──────────────────────────────────────────────────────────────────┤
+│  FRONTEND                                                        │
+│                                                                  │
+│  ⑩ chat-api.js: SSE 解析 → userText + fullText + audio          │
+│                                                                  │
+│  ⑪ app.js: addToHistory('user', userText, frame)                │
+│     addToHistory('assistant', fullText)                          │
+│     → saveSession()                          ← M1: 持久化会话    │
+│                                                                  │
+│  ⑫ app.js: tryDetectMemoryUpdate()           ← M5: 触发记忆检测 │
+│     ┌─────────────────────────────────────────┐                  │
+│     │ personalContext.detectUpdates(messages)  │ ← P0 规则提取   │
+│     │ → 如果有更新 → personalContext.update() │                  │
+│     │ → 写入 localStorage                     │                  │
+│     └─────────────────────────────────────────┘                  │
+│                                                                  │
+│  ⑬ (可选) chat-api.js: fetch /api/personal-context/update       │
+│     ┌─────────────────────────────────────────┐                  │
+│     │ POST { messages, currentContext }        │ ← P1 LLM 提取   │
+│     │ → Response { updatedContext }            │                  │
+│     │ → personalContext.set(updatedContext)    │                  │
+│     └─────────────────────────────────────────┘                  │
+│                                                                  │
+│  ⑭ app.js: playAudio(audio) 或 resetToIdle()                    │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+## 2. 职责矩阵
+
+| 职责 | 前端 (Browser) | 后端 (Vercel Edge) | 存储 |
+|------|:--:|:--:|:--:|
+| **对话历史维护** | ✅ `app.js` — `conversationHistory[]` + `addToHistory()` | ❌ 不存储对话 | localStorage `omni_session` |
+| **对话历史持久化** | ✅ `app.js` — `saveSession()` / `init()` 恢复 | ❌ | localStorage `omni_session` |
+| **Personal Context CRUD** | ✅ `personal-context.js` — `get/set/update/reset` | ❌ | localStorage `omni_personal_context` |
+| **PC 规则提取** | ✅ `personal-context.js` — `detectUpdates()` | ❌ | — |
+| **PC LLM 提取** | ✅ 发起请求 | ✅ `api/personal-context.js` — LLM 分析+合并 | — |
+| **PC 注入 System Prompt** | ❌ | ✅ `api/chat.js` — `buildMessages()` + `buildPersonalContextPrompt()` | — |
+| **PC 查看/编辑 UI** | ✅ `settings.js` + `index.html` — 记忆标签页 | ❌ | — |
+| **存储后端抽象** | ✅ `storage-backend.js` — 接口+注册表 | ❌ | localStorage / 未来扩展 |
+| **历史帧管理** | ✅ `app.js` — `buildApiHistory()` 过滤旧帧 | ❌ | — |
+| **PC 注入到请求体** | ✅ `chat-api.js` — `buildBody()` | ❌ | — |
+| **记忆冲突解决** | ❌（前端只做简单覆盖） | ✅ `api/personal-context.js` — `mergeContext()` | — |
+| **视觉领域统计** | 🔮 Phase 5.1 | ❌ | — |
+| **帧元数据提取** | 🔮 Phase 5.2 | ❌ | — |
+
+## 3. 接口契约
+
+### 3.1 请求体扩展（chat-api → backend）
+
+```js
+// POST /api/chat 或 /api/chat/stream
+{
+  // ... 现有字段（audio, frame, history, model, asr_*, llm_*, tts_*）
+
+  // ★ Phase 5 新增
+  "personalContext": {
+    "profile": { "name": "小明", "role": "大一学生", "language": "zh-CN" },
+    "preferences": { "responseStyle": "简洁", "responseLength": "短", "technicalLevel": "intermediate" },
+    "visualDomains": [{ "domain": "电子产品", "weight": 0.8, "lastSeen": 1718300000000 }],
+    "usagePatterns": { "typicalLighting": "indoor", "typicalDistance": "close" },
+    "aiNotes": ["用户对电子元件感兴趣"]
+  }
+}
+```
+
+### 3.2 Personal Context 更新请求
+
+```js
+// POST /api/personal-context/update（可选 P1）
+// Request:
+{
+  "messages": [
+    { "role": "user", "text": "我大一，在中北大学" },
+    { "role": "assistant", "text": "好的" }
+  ],
+  "currentContext": { /* 同 personalContext */ },
+  "llm_api_key": "sk-...",    // 从 settings 透传
+  "llm_provider": "dashscope",
+  "model": "qwen-turbo"
+}
+
+// Response:
+{
+  "updatedContext": { /* 完整的新 personalContext */ },
+  "changes": {
+    "profile": { "name": "小明", "role": "大一学生，中北大学" }
+  }
+}
+```
+
+### 3.3 System Prompt 片段（backend → LLM）
+
+```text
+[关于用户]
+- 小明，大一学生，中北大学，智能测控工程专业
+
+[用户偏好]
+- 回复风格: 简洁
+- 回复长度: 短
+- 技术基础: intermediate
+
+[视觉领域] 用户经常看: 电子产品、植物。如果画面匹配，优先从该领域回答。
+
+[使用习惯]
+- 典型环境: indoor
+- 典型距离: close
+
+[AI 对你的认知]
+- 用户经常在桌面上使用，可能是在宿舍/实验室
+- 用户对电子元件感兴趣，可能是专业课相关
+```
+
+**契约要点**：
+- 前端不构建此文本——后端 `buildPersonalContextPrompt()` 负责
+- 后端不修改 personalContext——只读取、格式化、注入
+- `personalContext` 是只读透传（除 `/api/personal-context/update` 端点）
+- 如果 `personalContext` 中所有字段均为 null/空，注入被跳过
+
+## 4. 前端模块依赖图
+
+```
+js/storage-backend.js          ← 新增（存储抽象）
+        │
+        ▼
+js/personal-context.js         ← 新增（PC 数据模型 + 规则提取）
+        │
+        ├──────────────────────────┐
+        ▼                          ▼
+js/app.js                    js/chat-api.js
+  ├── init() 恢复session       ├── buildBody() 携带 PC
+  ├── sendToAI() 持久化        ├── streamChat()
+  ├── saveSession()            └── chatNormal()
+  └── tryDetectMemoryUpdate()
+        │                          │
+        ▼                          ▼
+js/ui.js                     api/chat.js (backend)
+  └── renderMessages()          ├── buildMessages() 注入 PC
+        │                       └── buildPersonalContextPrompt()
+        ▼
+js/settings.js                  api/personal-context.js (backend, P1)
+  └── 记忆标签页 UI              ├── handler()
+        │                       └── mergeContext()
+        ▼
+index.html
+  └── 记忆标签页 HTML 骨架
+```
+
+## 5. 前后端对齐检查清单
+
+| # | 检查项 | 前端 | 后端 | 状态 |
+|---|--------|:--:|:--:|:--:|
+| 1 | `personalContext` 数据结构一致 | `personal-context.js` DEFAULTS | `buildMessages()` 解构字段 | ✅ |
+| 2 | 存储 key 命名空间统一 | `omni_personal_context` | 不涉及存储 | ✅ |
+| 3 | `buildBody()` 字段名与后端解构一致 | `personalContext` | `body.personalContext` | ✅ |
+| 4 | 空值处理——空 Profile 不注入 | `get()` 返回完整对象 | `buildPersonalContextPrompt()` 判空 | ✅ |
+| 5 | LLM 提取端点的请求/响应格式 | `fetch()` body 格式 | `handler()` 解析 | ✅ |
+| 6 | 合并逻辑——前端规则更新后不丢后端字段 | `update()` 浅合并 | `mergeContext()` 深合并 | ✅ |
+| 7 | 存储后端切换不破坏 PC 数据 | `storage-backend.js` 抽象 | 不涉及 | ✅ |
+| 8 | 向后兼容——Phase 4 请求无 pc 字段 | `buildBody()` 携带（非空） | `buildMessages()` 可选参数 | ✅ |
+| 9 | 版本升级——新增字段不丢失数据 | `init()` 合并 DEFAULTS | 不涉及 | ✅ |
+| 10 | UI 编辑 → PC 写入 → 下次请求携带 | `settings.js` → `personalContext.update()` → `buildBody()` | 下次请求读取 | ✅ |
+
+## 6. 前端独有的职责（后端不管的）
+
+| 职责 | 实现位置 | 原因 |
+|------|----------|------|
+| **帧图片持久化** | `app.js` — `saveSession()` 携带 base64 帧 | 后端不存储用户数据 |
+| **对话历史截断** | `app.js` — `MAX_HISTORY = 12` | 纯客户端策略 |
+| **规则提取** | `personal-context.js` — `detectUpdates()` | 零延迟，离线可用 |
+| **UI 渲染** | `settings.js` / `ui.js` / `index.html` | 纯前端 |
+| **存储后端选择** | `storage-backend.js` — `initStorage(name)` | 浏览器端决策 |
+
+## 7. 后端独有的职责（前端不管的）
+
+| 职责 | 实现位置 | 原因 |
+|------|----------|------|
+| **System Prompt 构建** | `api/chat.js` — `buildMessages()` | 需要访问完整消息上下文 |
+| **PC 文本格式化** | `api/chat.js` — `buildPersonalContextPrompt()` | 格式与 System Prompt 耦合 |
+| **LLM 记忆提取** | `api/personal-context.js` | 需要 LLM 能力 |
+| **记忆合并逻辑** | `api/personal-context.js` — `mergeContext()` | 与提取 Prompt 耦合 |
+| **ASR/LLM/TTS 调度** | `api/chat.js` | 已有，不变 |
+
+---
+
+# 第八部分：验收标准总览
 
 ## MVP 必须达成
 
@@ -1001,7 +1448,7 @@ async function handlePersonalContextUpdate(req) {
 
 ---
 
-# 第八部分：与 Phase 4 的兼容性
+# 第九部分：与 Phase 4 的兼容性
 
 - **`conversationHistory` 格式不变**，仅扩展容量（6→12）和新增 timestamp 字段
 - **`buildApiHistory()` 逻辑不变**，帧处理逻辑不变
@@ -1011,7 +1458,7 @@ async function handlePersonalContextUpdate(req) {
 
 ---
 
-# 第九部分：后续演进
+# 第十部分：后续演进
 
 当 MVP 验证通过后：
 
