@@ -163,4 +163,29 @@ function bindSettingsControls() {
       testBtn.textContent = '测试连接';
     });
   }
+
+  // 保存按钮 + Toast
+  const saveBtn = document.getElementById('saveSettings');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', () => {
+      const model = settings.model;
+      const asr = settings.asrProvider === 'dashscope' ? 'DashScope' : '百度';
+      const tts = settings.ttsEnabled ? '开' : '关';
+      const quality = Math.round(settings.frameQuality * 100) + '%';
+      const dsOk = settings.llmApiKey || envConfigured.llm;
+      const bdOk = settings.asrApiKey || envConfigured.asr;
+      showToast(`设置已保存 — 模型: ${model} | ASR: ${asr} | DashScope: ${dsOk ? '✓' : '✗'} | 百度: ${bdOk ? '✓' : '✗'} | TTS: ${tts} | 帧质量: ${quality}`);
+    });
+  }
+}
+
+// Toast 提示（页面底部居中，3s 消失）
+function showToast(msg) {
+  const existing = document.querySelector('.settings-toast');
+  if (existing) existing.remove();
+  const toast = document.createElement('div');
+  toast.className = 'settings-toast fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-gray-800 border border-gray-600 rounded-xl px-4 py-2 text-white text-xs shadow-lg transition-opacity';
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 300); }, 3000);
 }
