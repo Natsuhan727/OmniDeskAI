@@ -188,6 +188,7 @@ function onButtonDown(e) {
   if (currentAudio && !currentAudio.paused) {
     currentAudio.pause();
     currentAudio = null;
+    isProcessing = false;   // ⚠️ 必须重置，否则下面 if(isProcessing) 会拦截
     console.log('[tts] 用户打断播放，直接进入录音');
     // 不 return，继续执行下面的录音逻辑
   }
@@ -237,7 +238,7 @@ localStorage.setItem('hasConversed', 'true');
 hasEverConversed = true;
 ```
 
-`js/ui.js` 根据 `hasEverConversed` 显示不同空状态文案。
+`js/ui.js` 直接从 `localStorage` 读取 `hasConversed` 判断显示哪种空状态文案（`hasConversed` 是全局标记，`ui.js` 自行读取即可，不需要跨模块传参）。
 
 ---
 
