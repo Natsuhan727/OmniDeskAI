@@ -3,6 +3,7 @@
 
 import { settings } from './settings.js';
 import { appendBubble, updateBubbleText } from './ui.js';
+import { personalContext } from './personal-context.js';
 
 // 构建通用请求体（含 Key + Provider）
 function buildBody(audioBase64, frame, apiHistory) {
@@ -18,6 +19,7 @@ function buildBody(audioBase64, frame, apiHistory) {
     llm_api_key: settings.llmApiKey,
     llm_base_url: settings.llmBaseUrl || undefined,
     tts_provider: settings.ttsProvider,
+    personalContext: personalContext.get(),
   };
 }
 

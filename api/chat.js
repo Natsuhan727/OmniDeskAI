@@ -76,7 +76,7 @@ export default async function handler(req) {
 
     // ── 视觉对话 ──
     const tLLM = Date.now();
-    const llmResult = await chatWithVision(frame, userText, conversationHistory, llmCfg);
+    const llmResult = await chatWithVision(frame, userText, conversationHistory, llmCfg, body.personalContext);
 
     if (llmResult.error) {
       return json(llmResult.status, { text: null, audio: null, error: llmResult.error });
@@ -154,7 +154,7 @@ async function handleStream(req) {
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model,
-        messages: buildMessages(frame, userText, history),
+        messages: buildMessages(frame, userText, history, body.personalContext),
         max_tokens: 300, temperature: 0.7, stream: true,
       }),
       signal: AbortSignal.timeout(25_000),
@@ -528,13 +528,13 @@ const llmProviders = {
   dashscope: llmDashScope,
 };
 
-async function chatWithVision(frame, text, history = [], { provider, apiKey, baseUrl }) {
+async function chatWithVision(frame, text, history = [], { provider, apiKey, baseUrl }, personalContext) {
   const fn = llmProviders[provider];
   if (!fn) return { text: null, error: `未知 LLM 供应商: ${provider}`, status: 500 };
-  return fn(frame, text, history, { apiKey, baseUrl });
+  return fn(frame, text, history, { apiKey, baseUrl }, personalContext);
 }
 
-async function llmDashScope(frame, text, history = [], { apiKey, baseUrl }) {
+async function llmDashScope(frame, text, history = [], { apiKey, baseUrl }, personalContext) {
   if (!apiKey) {
     return { text: null, error: '服务未配置 LLM Key', status: 500 };
   }
@@ -543,7 +543,7 @@ async function llmDashScope(frame, text, history = [], { apiKey, baseUrl }) {
 
   const reqBody = JSON.stringify({
     model,
-    messages: buildMessages(frame, text, history),
+    messages: buildMessages(frame, text, history, personalContext),
     max_tokens: 300, temperature: 0.7,
   });
 
@@ -584,13 +584,21 @@ async function llmDashScope(frame, text, history = [], { apiKey, baseUrl }) {
 }
 
 // ── 构造 LLM messages（含视觉记忆） ──
-function buildMessages(frame, text, history) {
-  const messages = [{ role: 'system', content: [
+function buildMessages(frame, text, history, personalContext) {
+  const systemParts = [
     '你是视觉对话助手。用户给你一张摄像头画面和一个问题。',
     '结合画面简洁回答。150字以内，口语化，中文。',
     '不编造不存在的内容。不确定时诚实说明。',
     '不需要"我看到了..."开场白，直接回答。',
-  ].join(' ') }];
+  ];
+
+  // ── 注入 Personal Context ──
+  if (personalContext) {
+    const ctxPrompt = buildPersonalContextPrompt(personalContext);
+    if (ctxPrompt) systemParts.push(ctxPrompt);
+  }
+
+  const messages = [{ role: 'system', content: systemParts.join(' ') }];
 
   for (const h of history) {
     if (h.role === 'user' && h.frame) {
@@ -616,6 +624,12 @@ function buildMessages(frame, text, history) {
   });
 
   return messages;
+}
+
+// ── 构造个人上下文注入文本 ──
+function buildPersonalContextPrompt(pc) {
+  if (!pc || typeof pc !== 'string' || !pc.trim()) return '';
+  return `[用户自定义上下文]\n${pc.trim()}`;
 }
 
 // ═══════════════════════════════════════════════
