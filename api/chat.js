@@ -32,6 +32,8 @@ export default async function handler(req) {
 
   // GET /api/config — 告知前端哪些 Key 已通过环境变量配置
   if (req.method === 'GET' && pathname.endsWith('/config')) return handleConfig();
+  // GET /api/providers — 返回 Provider 元数据
+  if (req.method === 'GET' && pathname.endsWith('/providers')) return handleProviders();
 
   if (req.method !== 'POST') {
     return json(405, { text: null, audio: null, error: '仅支持 POST' });
@@ -229,8 +231,27 @@ async function handleTTS(req) {
 
 function handleConfig() {
   return json(200, {
-    asr_configured: !!(process.env.ASR_API_KEY),
-    llm_configured: !!(process.env.LLM_API_KEY),
+    env: {
+      ASR_API_KEY: !!(process.env.ASR_API_KEY),
+      ASR_SECRET_KEY: !!(process.env.ASR_SECRET_KEY),
+      LLM_API_KEY: !!(process.env.LLM_API_KEY),
+      LLM_BASE_URL: !!(process.env.LLM_BASE_URL),
+    },
+  });
+}
+
+function handleProviders() {
+  return json(200, {
+    asr: [
+      { id: 'baidu', name: '百度', fields: ['apiKey', 'secretKey'], link: 'https://ai.baidu.com/ai-doc/REFERENCE/Ck3dwjgn3' },
+      { id: 'dashscope', name: 'DashScope', fields: ['apiKey'], link: 'https://help.aliyun.com/zh/model-studio/getting-started/what-is-model-studio' },
+    ],
+    llm: [
+      { id: 'dashscope', name: 'DashScope', fields: ['apiKey', 'baseUrl'], models: ['qwen-vl-plus', 'qwen-vl-max'], link: 'https://help.aliyun.com/zh/model-studio/getting-started/what-is-model-studio' },
+    ],
+    tts: [
+      { id: 'baidu', name: '百度', fields: ['apiKey', 'secretKey'], link: 'https://ai.baidu.com/ai-doc/REFERENCE/Ck3dwjgn3' },
+    ],
   });
 }
 
