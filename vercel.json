@@ -10,6 +10,7 @@
     { "src": "/api/tts", "dest": "/api/chat" },
     { "src": "/api/config", "dest": "/api/chat" },
     { "src": "/api/providers", "dest": "/api/chat" },
-    { "src": "/api/ping", "dest": "/api/chat" }
+    { "src": "/api/ping", "dest": "/api/chat" },
+    { "src": "/api/monitor", "dest": "/api/chat" }
   ]
 }
