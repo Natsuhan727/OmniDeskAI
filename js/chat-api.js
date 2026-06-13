@@ -16,6 +16,7 @@ function buildBody(audioBase64, frame, apiHistory) {
     asr_secret_key: settings.asrSecretKey,
     llm_provider: settings.llmProvider,
     llm_api_key: settings.llmApiKey,
+    llm_base_url: settings.llmBaseUrl || undefined,
     tts_provider: settings.ttsProvider,
   };
 }
