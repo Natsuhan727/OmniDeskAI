@@ -43,15 +43,32 @@ export default async function handler(req) {
     return json(400, { text: null, audio: null, error: '请求格式错误，需要 JSON' });
   }
 
+  // ── 组装 Provider 配置（请求体 > 环境变量） ──
+  const asrCfg = {
+    provider: body.asr_provider || process.env.ASR_PROVIDER || 'baidu',
+    apiKey: body.asr_api_key || process.env.ASR_API_KEY,
+    secretKey: body.asr_secret_key || process.env.ASR_SECRET_KEY,
+  };
+  const llmCfg = {
+    provider: body.llm_provider || process.env.LLM_PROVIDER || 'dashscope',
+    apiKey: body.llm_api_key || process.env.LLM_API_KEY,
+    baseUrl: body.llm_base_url || process.env.LLM_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  };
+  const ttsCfg = {
+    provider: body.tts_provider || process.env.TTS_PROVIDER || 'baidu',
+    apiKey: asrCfg.apiKey,       // TTS 复用 ASR Key
+    secretKey: asrCfg.secretKey,
+  };
+
   const tTotal = Date.now();
   try {
-    const proc = await processAudio(body);
+    const proc = await processAudio(body, asrCfg);
     if (proc.error) return json(proc.status, { text: null, audio: null, error: proc.error });
     const { frame, text: userText, history: conversationHistory, model } = proc.data;
 
     // ── 视觉对话 ──
     const tLLM = Date.now();
-    const llmResult = await chatWithVision(frame, userText, conversationHistory);
+    const llmResult = await chatWithVision(frame, userText, conversationHistory, llmCfg);
 
     if (llmResult.error) {
       return json(llmResult.status, { text: null, audio: null, error: llmResult.error });
@@ -59,7 +76,7 @@ export default async function handler(req) {
 
     // ── TTS 语音合成 ──
     const tTTS = Date.now();
-    const ttsResult = await synthesizeSpeech(llmResult.text);
+    const ttsResult = await synthesizeSpeech(llmResult.text, ttsCfg);
     console.log('[api] TTS 耗时', Date.now() - tTTS, 'ms, audio:', ttsResult.audio ? `${ttsResult.audio.length} chars` : 'null');
 
     console.log('[api] LLM 耗时', Date.now() - tLLM, 'ms, 总耗时', Date.now() - tTotal, 'ms');
@@ -78,12 +95,12 @@ export default async function handler(req) {
 //  共享：ASR + 校验（流式/非流式共用）
 // ═══════════════════════════════════════════════
 
-async function processAudio(body) {
+async function processAudio(body, asrCfg) {
   const parsed = parseAndValidate(body);
   if (!parsed.valid) return { error: parsed.error, status: 400 };
 
   const { audio, frame, history } = parsed.data;
-  const asrResult = await transcribeAudio(audio);
+  const asrResult = await transcribeAudio(audio, asrCfg);
   if (asrResult.error) return { error: asrResult.error, status: asrResult.status };
   if (!asrResult.text?.trim()) return { error: '未识别到语音内容，请重试', status: 200 };
 
@@ -101,15 +118,26 @@ async function handleStream(req) {
     return json(400, { error: '请求格式错误，需要 JSON' });
   }
 
-  const proc = await processAudio(body);
+  const asrCfg = {
+    provider: body.asr_provider || process.env.ASR_PROVIDER || 'baidu',
+    apiKey: body.asr_api_key || process.env.ASR_API_KEY,
+    secretKey: body.asr_secret_key || process.env.ASR_SECRET_KEY,
+  };
+  const llmCfg = {
+    provider: body.llm_provider || process.env.LLM_PROVIDER || 'dashscope',
+    apiKey: body.llm_api_key || process.env.LLM_API_KEY,
+    baseUrl: body.llm_base_url || process.env.LLM_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  };
+
+  const proc = await processAudio(body, asrCfg);
   if (proc.error) return json(proc.status, { error: proc.error });
   const { frame, text: userText, history, model } = proc.data;
 
-  const apiKey = process.env.LLM_API_KEY;
+  const apiKey = llmCfg.apiKey;
   if (!apiKey) {
     return json(500, { error: '服务未配置 LLM Key' });
   }
-  const baseUrl = process.env.LLM_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+  const baseUrl = llmCfg.baseUrl;
 
   let streamResp;
   try {
@@ -180,7 +208,12 @@ async function handleTTS(req) {
     return json(400, { audio: null, error: '缺少 text 参数' });
   }
 
-  const ttsResult = await synthesizeSpeech(text);
+  const ttsCfg = {
+    provider: body.tts_provider || process.env.TTS_PROVIDER || 'baidu',
+    apiKey: body.asr_api_key || process.env.ASR_API_KEY,
+    secretKey: body.asr_secret_key || process.env.ASR_SECRET_KEY,
+  };
+  const ttsResult = await synthesizeSpeech(text, ttsCfg);
   return json(200, { audio: ttsResult.audio });
 }
 
@@ -193,15 +226,13 @@ const asrProviders = {
   baidu: asrBaidu,
 };
 
-async function transcribeAudio(audioBase64) {
-  const fn = asrProviders[ASR_PROVIDER];
-  if (!fn) return { text: null, error: `未知 ASR 供应商: ${ASR_PROVIDER}`, status: 500 };
-  return fn(audioBase64);
+async function transcribeAudio(audioBase64, { provider, apiKey, secretKey }) {
+  const fn = asrProviders[provider];
+  if (!fn) return { text: null, error: `未知 ASR 供应商: ${provider}`, status: 500 };
+  return fn(audioBase64, { apiKey, secretKey });
 }
 
-async function asrBaidu(audioBase64) {
-  const apiKey = process.env.ASR_API_KEY;
-  const secretKey = process.env.ASR_SECRET_KEY;
+async function asrBaidu(audioBase64, { apiKey, secretKey }) {
   if (!apiKey || !secretKey) {
     return { text: null, error: '服务未配置 ASR Key', status: 500 };
   }
@@ -303,19 +334,17 @@ const llmProviders = {
   dashscope: llmDashScope,
 };
 
-async function chatWithVision(frame, text, history = []) {
-  const fn = llmProviders[LLM_PROVIDER];
-  if (!fn) return { text: null, error: `未知 LLM 供应商: ${LLM_PROVIDER}`, status: 500 };
-  return fn(frame, text, history);
+async function chatWithVision(frame, text, history = [], { provider, apiKey, baseUrl }) {
+  const fn = llmProviders[provider];
+  if (!fn) return { text: null, error: `未知 LLM 供应商: ${provider}`, status: 500 };
+  return fn(frame, text, history, { apiKey, baseUrl });
 }
 
-async function llmDashScope(frame, text, history = []) {
-  const apiKey = process.env.LLM_API_KEY;
+async function llmDashScope(frame, text, history = [], { apiKey, baseUrl }) {
   if (!apiKey) {
     return { text: null, error: '服务未配置 LLM Key', status: 500 };
   }
 
-  const baseUrl = process.env.LLM_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
   const model = process.env.LLM_MODEL || 'qwen-vl-plus';
 
   const reqBody = JSON.stringify({
@@ -400,11 +429,11 @@ function buildMessages(frame, text, history) {
 //  新增供应商：下面加一个 ttsXxx 函数，在此 switch 加 case
 // ═══════════════════════════════════════════════
 
-async function synthesizeSpeech(text) {
-  const fn = ttsProviders[TTS_PROVIDER];
-  if (!fn) return { audio: null, error: `未知 TTS 供应商: ${TTS_PROVIDER}` };
+async function synthesizeSpeech(text, { provider, apiKey, secretKey }) {
+  const fn = ttsProviders[provider];
+  if (!fn) return { audio: null, error: `未知 TTS 供应商: ${provider}` };
   try {
-    return await fn(text);
+    return await fn(text, { apiKey, secretKey });
   } catch (err) {
     console.error('[tts] 降级:', err.message);
     return { audio: null, error: err.message };
@@ -412,9 +441,7 @@ async function synthesizeSpeech(text) {
 }
 
 const ttsProviders = {
-  baidu: async (text) => {
-    const apiKey = process.env.ASR_API_KEY;
-    const secretKey = process.env.ASR_SECRET_KEY;
+  baidu: async (text, { apiKey, secretKey }) => {
     if (!apiKey || !secretKey) {
       return { audio: null, error: 'TTS 未配置凭证（复用 ASR Key）' };
     }
