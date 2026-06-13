@@ -116,9 +116,9 @@ function onButtonDown(e) {
   if (currentAudio && !currentAudio.paused) {
     currentAudio.pause();
     currentAudio = null;
-    isProcessing = false;
-    console.log('[tts] 用户打断播放，直接进入录音');
-    // 不 return，继续进入录音流程
+    resetToIdle();
+    console.log('[tts] 用户打断播放');
+    return;
   }
 
   if (isProcessing || !stream) return;
