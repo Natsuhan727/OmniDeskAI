@@ -76,6 +76,7 @@ async function sendToAI(audioBase64, frame) {
     console.log('[api] stream elapsed:', Date.now() - t0, 'ms, text:', text?.slice(0, 80));
     addToHistory('user', userText, frame);
     addToHistory('assistant', text);
+    settings.hasConversed = true;
     if (audio) { playAudio(audio); } else { resetToIdle(); }
   } catch (streamErr) {
     console.error('[stream] 降级非流式:', streamErr.message);
@@ -85,6 +86,7 @@ async function sendToAI(audioBase64, frame) {
       if (data.text && data.userText) {
         addToHistory('user', data.userText, frame);
         addToHistory('assistant', data.text);
+        settings.hasConversed = true;
         appendBubble('user', data.userText, frame);
         appendBubble('assistant', data.text);
         if (data.audio) { playAudio(data.audio); } else { resetToIdle(); }
