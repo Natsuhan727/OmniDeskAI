@@ -94,8 +94,15 @@ const llmKey = body.llm_api_key || process.env.LLM_API_KEY;
 前端需要知道哪些 Key 已通过环境变量配置。新增一个轻量端点：
 
 ```js
-// api/chat.js 路由分发加一条
-if (pathname.endsWith('/config')) return handleConfig(req);
+// api/chat.js — 路由分发提到 method 检查之前（GET 请求也需要放行）
+const url = new URL(req.url);
+
+if (req.method === 'OPTIONS') { /* CORS 预检 */ }
+if (req.method === 'GET' && url.pathname.endsWith('/config')) return handleConfig();
+if (req.method !== 'POST') return json(405, { error: '仅支持 POST' });
+
+if (url.pathname.endsWith('/stream')) return handleStream(req);
+if (url.pathname.endsWith('/tts')) return handleTTS(req);
 
 async function handleConfig() {
   return json(200, {
@@ -104,6 +111,8 @@ async function handleConfig() {
   });
 }
 ```
+
+> ⚠️ 关键：`/config` 是 GET 请求，必须放在 `if (req.method !== 'POST')` 检查**之前**。
 
 前端根据返回决定 placeholder 文案：
 - 已配置 → placeholder="已通过环境变量配置" + 输入框禁用
@@ -131,7 +140,7 @@ async function handleConfig() {
 ### 3.5 后端读取逻辑
 
 ```js
-// processAudio 中
+// processAudio 接收 asrCfg 并透传给 transcribeAudio
 const asrProvider = body.asr_provider || process.env.ASR_PROVIDER || 'baidu';
 const asrKey = body.asr_api_key || process.env.ASR_API_KEY;
 const asrSecret = body.asr_secret_key || process.env.ASR_SECRET_KEY;
@@ -142,38 +151,69 @@ const llmProvider = body.llm_provider || process.env.LLM_PROVIDER || 'dashscope'
 const ttsProvider = body.tts_provider || process.env.TTS_PROVIDER || 'baidu';
 ```
 
-> 注意：Provider 函数签名需要增加参数——不再直接从 `process.env` 读 Key，而是从调用方传入。
+> Provider 函数签名需要增加参数。handler 侧组装 cfg 对象并透传：
+
+```js
+// handler 中组装三个 Provider 的配置
+const asrCfg = {
+  provider: body.asr_provider || process.env.ASR_PROVIDER || 'baidu',
+  apiKey: body.asr_api_key || process.env.ASR_API_KEY,
+  secretKey: body.asr_secret_key || process.env.ASR_SECRET_KEY,
+};
+const llmCfg = {
+  provider: body.llm_provider || process.env.LLM_PROVIDER || 'dashscope',
+  apiKey: body.llm_api_key || process.env.LLM_API_KEY,
+  baseUrl: body.llm_base_url || process.env.LLM_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+};
+const ttsCfg = {
+  provider: body.tts_provider || process.env.TTS_PROVIDER || 'baidu',
+  apiKey: body.asr_api_key || process.env.ASR_API_KEY,        // 复用 ASR Key
+  secretKey: body.asr_secret_key || process.env.ASR_SECRET_KEY,
+};
+
+// 透传给各层
+const proc = await processAudio(body, asrCfg);
+const llmResult = await chatWithVision(frame, text, history, llmCfg);
+const ttsResult = await synthesizeSpeech(text, ttsCfg);
+```
+
+> Provider 函数签名需要增加参数。`processAudio` 签名从 `processAudio(body)` 改为 `processAudio(body, asrCfg)`，内部将 `asrCfg` 透传给 `transcribeAudio`。`handleStream` 中同样。
 
 ### 3.6 Provider 签名变更
 
 当前 Provider 直接读 `process.env`：
 
+### 3.7 Provider 签名变更（完整版）
+
+每个 Provider 不再读 `process.env`。provider 名和 credentials 都从参数传入。
+
 ```js
-// 之前
+// ── 之前 ──
 async function asrBaidu(audioBase64) {
   const apiKey = process.env.ASR_API_KEY;  // 直接读 env
   ...
 }
-```
 
-改为从参数接收：
-
-```js
-// 之后
+// ── 之后 ──
 async function asrBaidu(audioBase64, { apiKey, secretKey }) {
   ...
 }
 
-// transcribeAudio 传入
-async function transcribeAudio(audioBase64, credentials) {
-  const fn = asrProviders[ASR_PROVIDER];
-  return fn(audioBase64, credentials);
+// Provider 选择也参数化
+async function transcribeAudio(audioBase64, { provider, apiKey, secretKey }) {
+  const fn = asrProviders[provider];
+  if (!fn) return { text: null, error: `未知 ASR: ${provider}`, status: 500 };
+  return fn(audioBase64, { apiKey, secretKey });
 }
 ```
 
-同样改造 `llmDashScope(frame, text, history, { apiKey })` 和 `ttsProviders.baidu(text, { apiKey, secretKey })`。
+同样改造：
+- `chatWithVision(frame, text, history, { provider, apiKey, baseUrl })` — 选择 LLM Provider + 传入 Key
+- `synthesizeSpeech(text, { provider, apiKey, secretKey })` — 选择 TTS Provider + 传入 Key
+- `llmDashScope(frame, text, history, { apiKey, baseUrl })` — 不再从 env 读 Key 和 URL
+- `ttsProviders.baidu(text, { apiKey, secretKey })` — 不再从 env 读 Key
 
-**改动范围**：Provider 函数签名 + `transcribeAudio`/`chatWithVision`/`synthesizeSpeech` 透传 credentials。
+**改动范围**：三个 dispatch 函数（transcribeAudio/chatWithVision/synthesizeSpeech）+ 三个 Provider 实现（asrBaidu/llmDashScope/ttsProviders.baidu）
 
 ---
 
@@ -287,7 +327,14 @@ placeholder.querySelector('p').classList.add('animate-pulse');
 
 ---
 
-## 10. 环境变量变化
+## 10. 安全提醒
+
+- Key 存在 `localStorage` 明文。hackathon demo 可接受，长期应加前端加密或后端 session token
+- 请求体中 Key 走 HTTPS，不会被中间人窃取
+
+---
+
+## 11. 环境变量变化
 
 | 变量 | Phase 3 | Phase 4 |
 |------|:--:|:--:|
@@ -304,7 +351,7 @@ placeholder.querySelector('p').classList.add('animate-pulse');
 
 ---
 
-## 11. 验收标准
+## 12. 验收标准
 
 ### 零部署配置
 - [ ] `vercel --prod` 后打开网页，不设任何环境变量
