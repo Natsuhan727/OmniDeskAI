@@ -247,12 +247,24 @@ async function handlePing(req) {
   };
 
   try {
-    // 用 1x1 透明 JPEG + 固定短问题测试 LLM 连通性
-    const pingFrame = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAIBAQEBAQIBAQECAgICAgQDAgICAgUEBAMEBgUGBgYFBgYGBwkIBgcJBwYGCAsICQoKCgoKBggLDAsKDAkKCgr/2wBDAQICAgICAgUDAwUKBwYHCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgr/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYI4Q/SFJicUoJjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6usLDxMXGx8jJytLT1NXW19jZ2uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD3+iiigD//2Q==';
-    const result = await chatWithVision(pingFrame, 'ping', [], llmCfg);
-    return json(200, { ok: !result.error, error: result.error || null });
+    // 纯文本请求测试 LLM 连通性（无需图片）
+    const resp = await fetch(`${llmCfg.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${llmCfg.apiKey}` },
+      body: JSON.stringify({
+        model: process.env.LLM_MODEL || 'qwen-vl-plus',
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: 5,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      return json(200, { ok: false, error: `LLM 错误 (${resp.status}): ${JSON.stringify(data).slice(0, 300)}` });
+    }
+    return json(200, { ok: true, error: null });
   } catch (err) {
-    return json(500, { ok: false, error: err.message });
+    return json(200, { ok: false, error: err.message });
   }
 }
 
