@@ -263,16 +263,32 @@ async function asrBaidu(audioBase64) {
 async function baiduOAuth(apiKey, secretKey) {
   if (cachedBaiduToken && Date.now() < baiduTokenExpiry) return cachedBaiduToken;
 
-  const resp = await fetch(
-    `https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id=${apiKey}&client_secret=${secretKey}`,
-    { signal: AbortSignal.timeout(5_000) }
-  );
+  console.log('[oauth] 请求 token, key:', apiKey?.slice(0, 8) + '...', 'secret:', secretKey ? '***' : 'MISSING');
 
-  if (!resp.ok) throw new Error(`ASR 鉴权失败 (${resp.status})`);
+  let resp;
+  try {
+    resp = await fetch(
+      `https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id=${apiKey}&client_secret=${secretKey}`,
+      { signal: AbortSignal.timeout(5_000) }
+    );
+  } catch (err) {
+    console.error('[oauth] fetch 失败:', err.message);
+    throw new Error(`ASR 鉴权网络错误: ${err.message}`);
+  }
+
+  if (!resp.ok) {
+    const bodyText = await resp.text().catch(() => '');
+    console.error('[oauth] HTTP', resp.status, bodyText.slice(0, 300));
+    throw new Error(`ASR 鉴权失败 (${resp.status}): ${bodyText.slice(0, 200)}`);
+  }
 
   const data = await resp.json();
-  if (!data.access_token) throw new Error('ASR 鉴权未返回 token');
+  if (!data.access_token) {
+    console.error('[oauth] 未返回 token:', JSON.stringify(data).slice(0, 200));
+    throw new Error('ASR 鉴权未返回 token');
+  }
 
+  console.log('[oauth] token 获取成功, expires_in:', data.expires_in);
   cachedBaiduToken = data.access_token;
   baiduTokenExpiry = Date.now() + (data.expires_in - 3600) * 1000;
   return cachedBaiduToken;
