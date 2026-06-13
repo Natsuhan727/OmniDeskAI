@@ -138,6 +138,13 @@
     }
     messageList.appendChild(wrapper);
     messageList.scrollTop = messageList.scrollHeight;
+    return wrapper;
+  }
+
+  function updateBubbleText(wrapper, newText) {
+    const p = wrapper.querySelector('p');
+    if (p) p.textContent = newText;
+    messageList.scrollTop = messageList.scrollHeight;
   }
 
   function showErrorBubble(msg) {
@@ -277,49 +284,126 @@
   }
 
   // ─── 发送 JSON（含 history） ───
+  // ─── 流式对话（SSE） ───
+  async function streamChat(audioBase64, frame, apiHistory) {
+    const resp = await fetch('/api/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audio: audioBase64, frame, history: apiHistory }),
+    });
+
+    if (!resp.ok) throw new Error(`Stream HTTP ${resp.status}`);
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let userText = '';
+    let fullText = '';
+    let aiBubble = null;
+    let gotFirstToken = false;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      for (const line of chunk.split('\n')) {
+        if (!line.startsWith('data: ')) continue;
+        const jsonStr = line.slice(6);
+        if (jsonStr === '[DONE]') continue;
+
+        try {
+          const data = JSON.parse(jsonStr);
+          // 第一个事件携带 userText
+          if (data.userText) {
+            userText = data.userText;
+            continue;
+          }
+          // 后续事件是 LLM 增量
+          const delta = data.choices?.[0]?.delta?.content;
+          if (delta) {
+            if (!gotFirstToken) {
+              gotFirstToken = true;
+              // 首 token 到达后渲染用户气泡
+              appendBubble('user', userText, frame);
+              aiBubble = appendBubble('assistant', '');
+            }
+            fullText += delta;
+            if (aiBubble) updateBubbleText(aiBubble, fullText);
+          }
+        } catch (e) { /* skip unparseable events */ }
+      }
+    }
+
+    if (!fullText) throw new Error('流式返回为空');
+
+    // 流式结束 → 调 TTS
+    let audio = null;
+    try {
+      const ttsResp = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: fullText }),
+      });
+      const ttsData = await ttsResp.json();
+      audio = ttsData.audio;
+    } catch (err) {
+      console.error('[tts] 请求失败:', err.message);
+    }
+
+    return { userText, text: fullText, audio };
+  }
+
+  // ─── 非流式对话（降级路径） ───
+  async function chatNormal(audioBase64, frame, apiHistory) {
+    const resp = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audio: audioBase64, frame, history: apiHistory }),
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.error) throw new Error(data.error || '请求失败');
+    return data;  // { text, userText, audio, error }
+  }
+
+  // ─── 发送（流式优先，失败降级非流式） ───
   async function sendToAI(audioBase64, frame) {
     setButtonState('sending');
     const t0 = Date.now();
 
-    // 构建 API history（视觉记忆规则：仅最近 1 轮带帧）
     const apiHistory = buildApiHistory();
-    console.log('[api] POST JSON, audio:', audioBase64.length, 'chars, frame:', frame.length, 'chars, history:', apiHistory.length, 'msgs');
+    console.log('[api] audio:', audioBase64.length, 'chars, frame:', frame.length, 'chars, history:', apiHistory.length, 'msgs');
 
     try {
-      const resp = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ audio: audioBase64, frame, history: apiHistory }),
-      });
-      const elapsed = Date.now() - t0;
-      const data = await resp.json();
-      console.log('[api] status:', resp.status, 'elapsed:', elapsed, 'ms, text:', data.text?.slice(0, 80), 'audio:', data.audio ? `${data.audio.length} chars` : 'null', 'error:', data.error);
-
-      if (!resp.ok || data.error) {
-        showErrorBubble(data.error || '请求失败');
+      // 优先流式
+      const { userText, text, audio } = await streamChat(audioBase64, frame, apiHistory);
+      console.log('[api] stream elapsed:', Date.now() - t0, 'ms, text:', text?.slice(0, 80));
+      addToHistory('user', userText, frame);
+      addToHistory('assistant', text);
+      if (audio) { playAudio(audio); } else { resetToIdle(); }
+    } catch (streamErr) {
+      console.error('[stream] 降级非流式:', streamErr.message);
+      // 降级：非流式 /api/chat
+      try {
+        const data = await chatNormal(audioBase64, frame, apiHistory);
+        console.log('[api] fallback elapsed:', Date.now() - t0, 'ms, text:', data.text?.slice(0, 80));
+        if (data.text && data.userText) {
+          addToHistory('user', data.userText, frame);
+          addToHistory('assistant', data.text);
+          appendBubble('user', data.userText, frame);
+          appendBubble('assistant', data.text);
+          if (data.audio) { playAudio(data.audio); } else { resetToIdle(); }
+        } else if (data.text) {
+          addToHistory('assistant', data.text);
+          appendBubble('assistant', data.text);
+          if (data.audio) { playAudio(data.audio); } else { resetToIdle(); }
+        } else {
+          resetToIdle();
+        }
+      } catch (fallbackErr) {
+        console.error('[api] 降级也失败:', fallbackErr.message);
+        showErrorBubble(fallbackErr.message || '请求失败');
         resetToIdle();
-        return;
       }
-
-      if (data.text && data.userText) {
-        // 成功轮次加入历史
-        addToHistory('user', data.userText, frame);
-        addToHistory('assistant', data.text);
-        // 渲染本轮对话气泡
-        appendBubble('user', data.userText, frame);
-        appendBubble('assistant', data.text);
-        if (data.audio) { playAudio(data.audio); } else { resetToIdle(); }
-      } else if (data.text) {
-        addToHistory('assistant', data.text);
-        appendBubble('assistant', data.text);
-        if (data.audio) { playAudio(data.audio); } else { resetToIdle(); }
-      } else {
-        resetToIdle();
-      }
-    } catch (err) {
-      console.error('[api] 网络错误:', err.message);
-      showErrorBubble('网络错误，请检查连接');
-      resetToIdle();
     }
   }
 
