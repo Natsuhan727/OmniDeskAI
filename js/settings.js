@@ -180,8 +180,14 @@ function renderSection(kind, label) {
       else { body.asr_api_key = settings.asrApiKey; body.asr_secret_key = settings.asrSecretKey; }
       const r = await fetch('/api/ping', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const d = await r.json();
-      resultEl.innerHTML = d.ok ? '<span class="text-green-400">✓ 正常</span>' : `<span class="text-red-400">✗ ${d.error || '失败'}</span>`;
-    } catch (e) { resultEl.innerHTML = '<span class="text-red-400">✗ 网络错误</span>'; }
+      const provName = provider.name;
+      const serviceName = { asr: '语音识别', llm: '对话模型', tts: '语音合成' }[kind];
+      if (d.ok) {
+        resultEl.innerHTML = `<span class="text-green-400">✓ ${provName} ${serviceName}连接正常 — API Key 验证通过</span>`;
+      } else {
+        resultEl.innerHTML = `<span class="text-red-400">✗ ${provName} ${serviceName}: ${d.error || '连接失败'}</span>`;
+      }
+    } catch (e) { resultEl.innerHTML = '<span class="text-red-400">✗ 网络错误：无法连接到服务器</span>'; }
     testBtn.disabled = false; testBtn.textContent = `测试 ${labelMap[kind]}`;
   });
 }
