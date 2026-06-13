@@ -80,9 +80,12 @@ async function sendToAI(audioBase64, frame) {
     if (audio) { playAudio(audio); } else { resetToIdle(); }
   } catch (streamErr) {
     console.error('[stream] 降级非流式:', streamErr.message);
+    const placeholder = appendBubble('assistant', '⏳ AI 正在组织语言...');
+    placeholder.querySelector('p').classList.add('animate-pulse');
     try {
       const data = await chatNormal(audioBase64, frame, apiHistory);
       console.log('[api] fallback elapsed:', Date.now() - t0, 'ms, text:', data.text?.slice(0, 80));
+      placeholder.remove();
       if (data.text && data.userText) {
         addToHistory('user', data.userText, frame);
         addToHistory('assistant', data.text);
@@ -98,6 +101,7 @@ async function sendToAI(audioBase64, frame) {
         resetToIdle();
       }
     } catch (fallbackErr) {
+      if (placeholder && placeholder.parentNode) placeholder.remove();
       console.error('[api] 降级也失败:', fallbackErr.message);
       showErrorBubble(fallbackErr.message || '请求失败');
       resetToIdle();
