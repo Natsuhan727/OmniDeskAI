@@ -4,9 +4,10 @@
 import { webmToPcmBase64 } from './audio-converter.js';
 import { settings, initSettingsPanel } from './settings.js';
 import { appendBubble, showErrorBubble, renderMessages } from './ui.js';
-import { streamChat, chatNormal } from './chat-api.js';
+import { streamChat, chatNormal, monitorStream } from './chat-api.js';
 import { getStorage } from './storage-backend.js';
 import { personalContext } from './personal-context.js';
+import { createMonitor } from './monitor.js';
 
 // ── 全局状态 ──
 let stream = null;
@@ -15,6 +16,9 @@ let mediaRecorder = null;
 let audioChunks = [];
 let currentAudio = null;
 let conversationHistory = [];
+let monitor = null;
+let monitorHistory = [];
+let wasMonitoring = false;
 
 // ── DOM 引用 ──
 const video = document.getElementById('video');
@@ -36,7 +40,16 @@ function setButtonState(state) {
   talkBtn.className = 'w-full py-4 rounded-xl text-lg font-semibold select-none transition-colors duration-200 ' + s.cls;
 }
 
-function resetToIdle() { isProcessing = false; setButtonState('idle'); }
+function resetToIdle() {
+  isProcessing = false;
+  setButtonState('idle');
+  // 监测恢复
+  if (wasMonitoring && monitor && monitor.getState().mode === 'idle') {
+    monitor.resume();
+    updateMonitorUI(false);
+  }
+  wasMonitoring = false;
+}
 
 // ── 历史管理 ──
 const MAX_HISTORY = 12; // 6 轮
@@ -82,6 +95,90 @@ function playAudio(audioBase64) {
   currentAudio.onended = () => { currentAudio = null; resetToIdle(); };
   currentAudio.onerror = () => { currentAudio = null; resetToIdle(); };
   currentAudio.play().catch(() => { currentAudio = null; resetToIdle(); });
+}
+
+// ── 监测控制 ──
+function startMonitor() {
+  monitor = createMonitor({
+    captureFrame() {
+      ctx.drawImage(video, 0, 0, 640, 480);
+      return canvas.toDataURL('image/jpeg', settings.frameQuality);
+    },
+    getConversationHistory() {
+      return buildApiHistory(); // 只含用户问答，不含监测观察
+    },
+    async onObservation({ frame, prevFrame, observationContext, history }) {
+      console.log('[monitor] onObservation called, frame:', frame.length, 'prevFrame:', !!prevFrame, 'ctx:', observationContext.length);
+      let result;
+      try {
+        result = await monitorStream({
+          frame,
+          prevFrame,
+          observationContext,
+          history,
+          personalContext: personalContext.get(),
+        });
+      } catch (err) {
+        console.error('[monitor] request failed:', err.message);
+        return;
+      }
+
+      const text = result.observation?.trim();
+      console.log('[monitor] observation result:', text ? `"${text.slice(0, 50)}"` : '(empty)');
+      if (!text || text === 'NO_CHANGE') return;
+
+      monitor.onObservationDone(text);
+      appendBubble('assistant', '🔴 ' + text);
+      monitorHistory.push({ role: 'monitor', text, timestamp: Date.now() });
+      while (monitorHistory.length > 20) monitorHistory.shift();
+
+      // TTS 播报
+      if (settings.ttsEnabled) {
+        try {
+          const ttsResp = await fetch('/api/tts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text }),
+          });
+          const ttsData = await ttsResp.json();
+          if (ttsData.audio) playAudio(ttsData.audio);
+        } catch (err) {
+          console.error('[monitor] TTS failed:', err.message);
+        }
+      }
+    },
+    onSpeaking(isSpeaking) {
+      updateMonitorUI(isSpeaking);
+    },
+    onError(err) {
+      console.error('[monitor]', err.message);
+    },
+  });
+
+  monitor.start();
+  updateMonitorUI(false);
+}
+
+function stopMonitor() {
+  if (monitor) { monitor.stop(); monitor = null; }
+  updateMonitorUI(false);
+}
+
+function updateMonitorUI(isSending) {
+  const btn = document.getElementById('monitorToggle');
+  if (!btn) return;
+  const s = monitor ? monitor.getState() : null;
+  if (!s || s.mode === 'idle') {
+    btn.textContent = '▶ 开启实时监测';
+    btn.className = 'w-full py-2 rounded-lg text-sm font-medium select-none bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors';
+  } else if (isSending || s.mode === 'sending') {
+    btn.textContent = '⏳ AI 正在观察...';
+    btn.className = 'w-full py-2 rounded-lg text-sm font-medium select-none bg-gray-600 text-gray-300 cursor-not-allowed';
+  } else {
+    const skipped = s.suppressedCount > 0 ? ` · 已跳过 ${s.suppressedCount} 帧` : '';
+    btn.textContent = `🔴 监测中 · 每 2s${skipped}`;
+    btn.className = 'w-full py-2 rounded-lg text-sm font-medium select-none bg-red-600/30 hover:bg-red-600/50 text-red-300 border border-red-600/30 transition-colors';
+  }
 }
 
 // ── 发送（流式优先，失败降级非流式） ──
@@ -138,6 +235,13 @@ async function sendToAI(audioBase64, frame) {
 // ── 按下（含打断逻辑） ──
 function onButtonDown(e) {
   e.preventDefault();
+
+  // 监测运行中 → 暂停
+  if (monitor && monitor.getState().mode !== 'idle') {
+    wasMonitoring = true;
+    monitor.pause();
+    updateMonitorUI(false);
+  }
 
   if (currentAudio && !currentAudio.paused) {
     currentAudio.pause();
@@ -233,13 +337,26 @@ async function init() {
 
   // 初始化 Personal Context
   await personalContext.init();
-  console.log('[init] personalContext:', personalContext.get()?.profile?.name ? '已配置' : '空');
+  console.log('[init] personalContext:', personalContext.get() ? '已配置' : '空');
 
   talkBtn.addEventListener('mousedown', onButtonDown);
   talkBtn.addEventListener('mouseup', onButtonUp);
   talkBtn.addEventListener('mouseleave', onButtonUp);
   talkBtn.addEventListener('touchstart', onButtonDown, { passive: false });
   talkBtn.addEventListener('touchend', onButtonUp);
+
+  // 监测开关
+  const monitorBtn = document.getElementById('monitorToggle');
+  if (monitorBtn) {
+    monitorBtn.addEventListener('click', () => {
+      if (monitor && monitor.getState().mode !== 'idle') {
+        stopMonitor();
+      } else {
+        startMonitor();
+      }
+    });
+  }
+
   initSettingsPanel();
   console.log('[init] 就绪');
 }
