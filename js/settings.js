@@ -1,6 +1,8 @@
 // js/settings.js
 // 设置单例 + 从后端获取 Provider 元数据 + 面板动态渲染
 
+import { personalContext } from './personal-context.js';
+
 // ── 设置单例 ──
 export const settings = {
   get model() { return localStorage.getItem('model') || 'qwen-vl-plus'; },
@@ -85,6 +87,28 @@ export async function initSettingsPanel() {
 
   renderAllSections();
   bindStaticControls();
+  initMemoryTab();
+
+  // ── 标签页切换 ──
+  const tabs = document.querySelectorAll('.settings-tab');
+  const providersTab = document.getElementById('providersTab');
+  const memoryTab = document.getElementById('memoryTab');
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      const target = tab.dataset.tab;
+      tabs.forEach(t => { t.classList.remove('active', 'bg-gray-800', 'text-white', 'border-gray-700/50'); t.classList.add('border-transparent', 'text-gray-500'); });
+      tab.classList.add('active', 'bg-gray-800', 'text-white', 'border-gray-700/50');
+      tab.classList.remove('border-transparent', 'text-gray-500');
+      if (target === 'providers') {
+        providersTab.classList.remove('hidden');
+        memoryTab.classList.add('hidden');
+      } else {
+        providersTab.classList.add('hidden');
+        memoryTab.classList.remove('hidden');
+        refreshMemoryTab();
+      }
+    });
+  });
 }
 
 // ── 渲染三个 Provider 层 ──
@@ -247,6 +271,12 @@ function bindStaticControls() {
     else parts.push(`ASR: 未配置`);
     if (settings.llmApiKey || envConfigured.LLM_API_KEY) parts.push(`LLM: ${llmName} ✓`);
     else parts.push(`LLM: 未配置`);
+
+    // 记忆状态
+    const pcText = personalContext.get();
+    if (pcText) parts.push('记忆: 已配置');
+    else parts.push('记忆: 未配置');
+
     showToast(`✓ 设置已保存 — ${parts.join(' | ')}`);
   });
 }
@@ -260,3 +290,32 @@ function showToast(msg) {
 }
 
 function escapeAttr(s) { return String(s || '').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+
+// ── 记忆标签页 ──
+function initMemoryTab() {
+  const textarea = document.getElementById('mem_prompt');
+
+  // 从 PC 加载
+  if (textarea) textarea.value = personalContext.get();
+
+  // 保存按钮
+  const saveBtn = document.getElementById('saveMemory');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', async () => {
+      const text = textarea?.value || '';
+      await personalContext.save(text);
+      if (text.trim()) {
+        showToast(`✓ 记忆已保存 — ${text.trim().slice(0, 50)}${text.trim().length > 50 ? '…' : ''}`);
+      } else {
+        showToast('✓ 记忆已清除');
+      }
+    });
+  }
+}
+
+function refreshMemoryTab() {
+  const textarea = document.getElementById('mem_prompt');
+  if (textarea) textarea.value = personalContext.get();
+}
+
+
