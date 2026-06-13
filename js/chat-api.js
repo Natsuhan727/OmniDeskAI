@@ -20,13 +20,18 @@ export async function streamChat(audioBase64, frame, apiHistory) {
   let fullText = '';
   let aiBubble = null;
   let gotFirstToken = false;
+  let buffer = '';
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
 
-    const chunk = decoder.decode(value, { stream: true });
-    for (const line of chunk.split('\n')) {
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    // 最后一段可能是不完整的行（SSE 行被跨 chunk 切断），留着下次拼接
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
       if (!line.startsWith('data: ')) continue;
       const jsonStr = line.slice(6);
       if (jsonStr === '[DONE]') continue;
@@ -49,6 +54,22 @@ export async function streamChat(audioBase64, frame, apiHistory) {
         }
       } catch (e) { /* skip unparseable events */ }
     }
+  }
+
+  // 流结束，处理 buffer 中剩余内容
+  if (buffer.startsWith('data: ') && buffer.slice(6) !== '[DONE]') {
+    try {
+      const data = JSON.parse(buffer.slice(6));
+      const delta = data.choices?.[0]?.delta?.content;
+      if (delta) {
+        if (!gotFirstToken) {
+          appendBubble('user', userText, frame);
+          aiBubble = appendBubble('assistant', '');
+        }
+        fullText += delta;
+        if (aiBubble) updateBubbleText(aiBubble, fullText);
+      }
+    } catch (e) { /* skip */ }
   }
 
   if (!fullText) throw new Error('流式返回为空');
