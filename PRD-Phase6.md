@@ -55,6 +55,23 @@ requires: Phase 1-5 已完成
 - 平均差异 < 阈值（默认 3%）→ 视为相同，不发请求
 - 第一帧总是发送
 
+**TTS 防轰炸 (Cooldown)**：
+- 每次播报后进入冷却期（默认 5s），冷却期内所有观察静默丢弃
+- 连续两帧观察内容相似（字符串相似度 > 70%）→ 不播报
+- 冷却期内画面剧烈变化（差异 > 10% 阈值）→ 可打破冷却（紧急场景）
+
+**观察上下文 (ObservationContext)**：
+- 维护最近 3 条 AI 观察摘要的滚动数组
+- 每次成功观察后追加：`{ time, text, frameHash }`
+- 发送帧时携带上下文，让 AI 知道"刚才看到了什么"
+- 上下文不超过 200 字（自动截断旧条目）
+
+**监测历史隔离**：
+- 监测产生的 AI 观察消息**不进入 `conversationHistory`**
+- `conversationHistory` 只存用户问答（保持 12 条上限不被污染）
+- 监测观察消息单独存入 `monitorHistory`（最多 20 条）
+- 前端渲染时两条消息列表合并显示，但存储和 API 层面隔离
+
 **状态机**：
 ```
 IDLE ── start() ──→ OBSERVING ── tick() ──→ SENDING ── done ──→ OBSERVING
@@ -68,14 +85,22 @@ IDLE ── start() ──→ OBSERVING ── tick() ──→ SENDING ── d
 // js/monitor.js 导出
 
 export function createMonitor(deps) {
-  // deps = { captureFrame, getHistory, onObservation, onSpeaking, onError }
+  // deps = {
+  //   captureFrame,         // () → base64 帧
+  //   getConversationHistory, // () → 用户问答历史（不含监测观察）
+  //   onObservation,         // (text, audio?) → 处理 AI 观察结果（UI 渲染 + TTS）
+  //   onSpeaking,            // (isSpeaking) → UI 状态更新
+  //   onError,               // (err) → 错误处理
+  // }
   return {
-    start(intervalMs?),   // 启动监测，默认 2000ms
-    stop(),               // 停止监测
-    pause(),              // 暂停（用户说话时）
-    resume(),             // 恢复
-    setInterval(ms),      // 调整间隔
-    getState(),           // → { mode, lastFrame, frameCount, suppressedCount }
+    start(intervalMs?),      // 启动监测，默认 2000ms
+    stop(),                  // 停止监测
+    pause(),                 // 暂停（用户说话时）
+    resume(),                // 恢复
+    setInterval(ms),         // 调整间隔
+    setCooldown(ms),         // 调整 TTS 冷却期，默认 5000ms
+    getState(),              // → { mode, lastFrame, frameCount, suppressedCount }
+    getObservationContext(), // → [{ time, text, frameHash }] 最近 3 条
   };
 }
 ```
@@ -84,7 +109,11 @@ export function createMonitor(deps) {
 
 - [ ] `monitor.start()` → 每隔 interval 毫秒自动调用 `captureFrame()`
 - [ ] 画面不变时 → `suppressedCount` 递增，不发请求
-- [ ] 画面变化时 → 调用 `sendFrame()` → SSE → `onObservation(text, audio)`
+- [ ] 画面变化时 → 发送帧到后端 → SSE → `onObservation(text, audio)`
+- [ ] **TTS 冷却期**：播报后 5s 内新观察静默（除非画面差异 > 10%）
+- [ ] **内容去重**：连续两帧观察文字相似度 > 70% → 跳过播报
+- [ ] **观察上下文**：每次发送帧携带 `observationContext`（最近 3 条摘要）
+- [ ] **监测历史隔离**：监测观察存入 `monitorHistory`，不污染 `conversationHistory`
 - [ ] `monitor.pause()` → 停止定时器
 - [ ] `monitor.resume()` → 恢复定时器
 - [ ] `monitor.stop()` → 停止定时器，状态回 IDLE
@@ -109,7 +138,12 @@ export function createMonitor(deps) {
 ```json
 {
   "frame": "data:image/jpeg;base64,...",
-  "history": [...],
+  "prevFrame": "data:image/jpeg;base64,...",    // 上一帧（用于 AI 感知连续性）
+  "observationContext": [                        // 最近 3 条 AI 观察摘要
+    { "time": 1718300000, "text": "桌上有个红色水杯" },
+    { "time": 1718300003, "text": "一只手出现在画面中" }
+  ],
+  "history": [...],                              // 用户问答历史（不含监测观察）
   "personalContext": "...",
   "action": "observe",
   "llm_api_key": "...", "llm_provider": "...", "llm_base_url": "..."
@@ -132,8 +166,17 @@ data: [DONE]
 **System Prompt（监测专用）**：
 ```
 你是实时视觉监测助手。每隔几秒你会收到一张用户摄像头的画面。
-- 如果画面与上次描述的基本相同，只回复 NO_CHANGE
-- 如果有新物体、人物、变化，简短描述（15字以内），口语化
+
+[你的记忆]
+以下是你在过去几秒内观察到的事情（按时间从旧到新）：
+- (2秒前) 桌上有个红色水杯
+- (刚刚) 一只手出现在画面中
+
+[规则]
+- 你会同时收到上一帧画面和当前帧画面，比较两者的差异
+- 如果画面与上次无明显变化，只回复 NO_CHANGE
+- 如果有新物体、人物、值得注意的变化，简短描述（15字以内），口语化
+- 如果之前观察到的物体消失了，也可以提及
 - 不需要"我看到了..."开场白，直接描述
 - 不编造不存在的内容
 ```
@@ -151,12 +194,14 @@ if (pathname.endsWith('/monitor')) return handleMonitor(req);
 ### 验收标准
 
 - [ ] `POST /api/monitor` → SSE 流式返回
-- [ ] 帧正确传递给 LLM（VLM 图片消息格式）
+- [ ] 当前帧 + 上一帧（prevFrame）正确传递给 LLM（两张图片消息）
+- [ ] `observationContext`（最近 3 条观察摘要）正确注入 System Prompt
 - [ ] `personalContext` 正确注入 System Prompt
 - [ ] LLM 返回 "NO_CHANGE" 时前端不播报
 - [ ] LLM 返回观察文字时正确流式输出
-- [ ] history 正确传递（最近 6 条对话）
+- [ ] `history` 只包含用户问答（不含监测观察），最近 6 条
 - [ ] 超时处理（25s AbortSignal）与现有端点一致
+- [ ] `buildMonitorMessages()` 将 prevFrame + currentFrame 作为连续两帧传给 VLM
 
 ---
 
@@ -173,7 +218,7 @@ if (pathname.endsWith('/monitor')) return handleMonitor(req);
 
 **`js/chat-api.js` 新增**：
 ```js
-export async function monitorStream({ frame, history, personalContext, action }) {
+export async function monitorStream({ frame, prevFrame, observationContext, history, personalContext, action }) {
   // POST /api/monitor → SSE 解析 → { observation, audio }
   // 复用 streamChat 的 SSE buffer 逻辑
 }
@@ -181,9 +226,26 @@ export async function monitorStream({ frame, history, personalContext, action })
 
 **`js/app.js` 修改**：
 - `init()` 中新增加载监测开关的 DOM 引用和事件绑定
+- **新增 `monitorHistory` 数组**（独立于 `conversationHistory`）：存储监测产生的 AI 观察消息
+- **新增 `observationContext` 数组**：最近 3 条观察摘要的滚动窗口
 - `onButtonDown()` 中：如果监测正在运行，先 `monitor.pause()`
 - `sendToAI()` 完成后：如果之前暂停了监测，`monitor.resume()`
 - `playAudio()` 中：AI 监测播报时按钮状态显示 `speaking`，可打断
+- 每次监测观察结束后更新 `observationContext`
+
+**监测与问答的历史隔离**：
+```
+conversationHistory (用户问答)          monitorHistory (监测观察)
+─────────────────────                   ─────────────────────
+[user] 这是什么？                       [monitor] 画面中出现红色水杯
+[assistant] 这是...                     [monitor] 水杯被拿走了
+[user] 那个呢？                         [monitor] 出现一本书
+─────────────────────                   ─────────────────────
+MAX 12 条，不受监测污染                  MAX 20 条，独立管理
+─────────────────────                   ─────────────────────
+                    ↓ 合并渲染 ↓
+          UI: 消息列表按时间戳排序显示
+```
 
 **用户说话打断监测的完整流程**：
 ```
@@ -196,6 +258,11 @@ export async function monitorStream({ frame, history, personalContext, action })
 - [ ] 用户松手 → AI 问答回复完成 → 监测自动恢复
 - [ ] 监测运行的 AI 播报中，用户按住按钮 → 打断播报 + 暂停监测
 - [ ] 监测关闭后，所有行为与 Phase 5 完全一致（向后兼容）
+- [ ] **监测观察不进入 `conversationHistory`**——`conversationHistory` 只存用户问答
+- [ ] **`monitorHistory` 独立存储**监测观察，最多 20 条
+- [ ] **`observationContext` 正确维护**——每次观察后更新，始终保留最近 3 条
+- [ ] 发送监测帧时携带 `prevFrame` + `observationContext`
+- [ ] 用户问答的 `history`（传给 `/api/monitor`）不包含监测观察
 
 ---
 
@@ -281,6 +348,10 @@ Step 4: M4 监测 UI (index.html)               ~1h
 - [ ] `monitor.start()` 启动定时器，周期性捕获帧
 - [ ] 变化检测正确跳过相似帧（差异 < 3%）
 - [ ] 变化检测正确发送变化帧（差异 ≥ 3%）
+- [ ] **TTS 冷却期**：播报后 5s 内新观察静默（画面剧变 > 10% 除外）
+- [ ] **内容去重**：连续两帧观察文字相似度 > 70% → 不播报
+- [ ] **观察上下文**：`observationContext` 维护最近 3 条，每帧携带
+- [ ] **监测历史隔离**：`monitorHistory` 独立，不进入 `conversationHistory`
 - [ ] `pause()` 停止定时器，`resume()` 恢复
 - [ ] `stop()` 停止定时器并回到 IDLE
 - [ ] `getState()` 返回实时状态（mode, frameCount, suppressedCount）
@@ -288,17 +359,20 @@ Step 4: M4 监测 UI (index.html)               ~1h
 ## M2: 后端监测端点
 
 - [ ] `POST /api/monitor` 返回 SSE 流
-- [ ] 帧正确传递给 VLM
+- [ ] 当前帧 + 上一帧正确传递给 VLM（两张图片消息）
+- [ ] `observationContext` 注入 System Prompt（"你的记忆"段落）
 - [ ] System Prompt 包含监测专用指令 + Personal Context
 - [ ] LLM 返回 "NO_CHANGE" 时正常结束
 - [ ] LLM 返回观察文字时 SSE 流式输出
-- [ ] history 最近 6 条正确传递
+- [ ] `history` 只包含用户问答（不含监测观察）
 - [ ] 向后兼容——现有 `/api/chat` 不受影响
 
 ## M3: 前端接入
 
 - [ ] 监测运行中，按住说话 → 暂停监测 → 录音 → 回答 → 恢复监测
 - [ ] 监测播报中，按住说话 → 打断播报 → 暂停监测 → 录音
+- [ ] 监测观察不污染 `conversationHistory`
+- [ ] `monitorHistory` 独立存储，`observationContext` 正确维护
 - [ ] 监测关闭后，所有行为与 Phase 5 一致
 
 ## M4: 监测 UI
@@ -321,3 +395,6 @@ Step 4: M4 监测 UI (index.html)               ~1h
 > 4. 不修改 vercel.json——新路由在 `api/chat.js` 内部分发
 > 5. 用户说话优先级最高——监测播报可被打断
 > 6. 向后兼容——监测关闭时所有行为与 Phase 5 完全一致
+> 7. **【重要】监测历史隔离**：`conversationHistory` 只存用户问答，监测观察存 `monitorHistory`，二者互不污染。传给 `/api/monitor` 和 `/api/chat` 的 `history` 字段只包含用户问答。
+> 8. **【重要】TTS 防轰炸**：播报后 5s 冷却期 + 内容相似度去重（> 70% 跳过），冷却期内画面剧变（> 10%）可打破冷却。
+> 9. **【重要】视觉连续性**：每次请求携带 `prevFrame`（上一帧）+ `observationContext`（最近 3 条 AI 观察摘要），让 LLM 感知时间维度和画面连续性。
