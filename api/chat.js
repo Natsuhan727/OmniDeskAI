@@ -43,12 +43,12 @@ export default async function handler(req) {
     return json(400, { text: null, audio: null, error: '请求格式错误，需要 JSON' });
   }
 
-  const proc = await processAudio(body);
-  if (proc.error) return json(proc.status, { text: null, audio: null, error: proc.error });
-  const { frame, text: userText, history: conversationHistory, model } = proc.data;
-
   const tTotal = Date.now();
   try {
+    const proc = await processAudio(body);
+    if (proc.error) return json(proc.status, { text: null, audio: null, error: proc.error });
+    const { frame, text: userText, history: conversationHistory, model } = proc.data;
+
     // ── 视觉对话 ──
     const tLLM = Date.now();
     const llmResult = await chatWithVision(frame, userText, conversationHistory);
@@ -209,13 +209,32 @@ async function asrBaidu(audioBase64) {
   const dataLen = Math.round(audioBase64.length * 0.75);
 
   async function call(token) {
-    const resp = await fetch('https://vop.baidu.com/server_api', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ format: 'pcm', rate: 16000, dev_pid: 1537, channel: 1, token, cuid: 'ai-visual-chat', len: dataLen, speech: audioBase64 }),
-      signal: AbortSignal.timeout(20_000),
-    });
-    const data = await resp.json();
+    let resp;
+    try {
+      resp = await fetch('https://vop.baidu.com/server_api', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ format: 'pcm', rate: 16000, dev_pid: 1537, channel: 1, token, cuid: 'ai-visual-chat', len: dataLen, speech: audioBase64 }),
+        signal: AbortSignal.timeout(20_000),
+      });
+    } catch (err) {
+      console.error('[asr] fetch 失败:', err.message);
+      throw new Error(`ASR 网络错误: ${err.message}`);
+    }
+
+    if (!resp.ok) {
+      const bodyText = await resp.text().catch(() => '');
+      console.error('[asr] HTTP', resp.status, bodyText.slice(0, 300));
+      throw new Error(`ASR 服务异常 (HTTP ${resp.status})`);
+    }
+
+    let data;
+    try {
+      data = await resp.json();
+    } catch (err) {
+      console.error('[asr] JSON 解析失败:', err.message);
+      throw new Error('ASR 响应格式异常');
+    }
 
     if (data.err_no === 0) {
       const text = Array.isArray(data.result) ? data.result.join('') : (data.result || '');
@@ -227,6 +246,7 @@ async function asrBaidu(audioBase64) {
     if (data.err_no === 3301 || data.err_no === 3307) {
       return { text: null, error: '语音质量不佳，请重试', status: 400, retry: false };
     }
+    console.error('[asr] err_no:', data.err_no, data.err_msg);
     return { text: null, error: `ASR 错误 (${data.err_no}): ${data.err_msg}`, status: 500, retry: false };
   }
 
