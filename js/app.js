@@ -3,8 +3,9 @@
 
 import { webmToPcmBase64 } from './audio-converter.js';
 import { settings, initSettingsPanel } from './settings.js';
-import { appendBubble, showErrorBubble } from './ui.js';
+import { appendBubble, showErrorBubble, renderMessages } from './ui.js';
 import { streamChat, chatNormal } from './chat-api.js';
+import { getStorage } from './storage-backend.js';
 
 // ── 全局状态 ──
 let stream = null;
@@ -37,9 +38,16 @@ function setButtonState(state) {
 function resetToIdle() { isProcessing = false; setButtonState('idle'); }
 
 // ── 历史管理 ──
+const MAX_HISTORY = 12; // 6 轮
+
 function addToHistory(role, text, frame) {
-  conversationHistory.push({ role, text, ...(frame ? { frame } : {}) });
-  while (conversationHistory.length > 6) conversationHistory.shift();
+  conversationHistory.push({
+    role,
+    text,
+    ...(frame ? { frame } : {}),
+    timestamp: Date.now(),
+  });
+  while (conversationHistory.length > MAX_HISTORY) conversationHistory.shift();
 }
 
 function buildApiHistory() {
@@ -52,6 +60,17 @@ function buildApiHistory() {
     }
   }
   return apiHistory;
+}
+
+// ── 会话持久化 ──
+async function saveSession() {
+  try {
+    const storage = getStorage();
+    await storage.set('omni_session', {
+      conversationHistory,
+      lastActiveAt: Date.now(),
+    });
+  } catch (e) { /* 忽略 */ }
 }
 
 // ── TTS 播放 ──
@@ -77,6 +96,7 @@ async function sendToAI(audioBase64, frame) {
     addToHistory('user', userText, frame);
     addToHistory('assistant', text);
     settings.hasConversed = true;
+    await saveSession();
     if (audio) { playAudio(audio); } else { resetToIdle(); }
   } catch (streamErr) {
     console.error('[stream] 降级非流式:', streamErr.message);
@@ -90,11 +110,13 @@ async function sendToAI(audioBase64, frame) {
         addToHistory('user', data.userText, frame);
         addToHistory('assistant', data.text);
         settings.hasConversed = true;
+        await saveSession();
         appendBubble('user', data.userText, frame);
         appendBubble('assistant', data.text);
         if (data.audio) { playAudio(data.audio); } else { resetToIdle(); }
       } else if (data.text) {
         addToHistory('assistant', data.text);
+        await saveSession();
         appendBubble('assistant', data.text);
         if (data.audio) { playAudio(data.audio); } else { resetToIdle(); }
       } else {
@@ -188,6 +210,17 @@ async function init() {
     stream.getAudioTracks().forEach((t, i) => console.log(`[init]  音频#${i}: "${t.label}" readyState=${t.readyState}`));
     video.srcObject = stream;
     hint.textContent = '提示：请使用 Chrome 浏览器'; hint.className = 'text-xs text-gray-500';
+
+    // 恢复上次会话
+    try {
+      const storage = getStorage();
+      const session = await storage.get('omni_session');
+      if (session?.conversationHistory?.length) {
+        conversationHistory = session.conversationHistory;
+        renderMessages(conversationHistory);
+        console.log('[init] 恢复会话:', conversationHistory.length, '条消息');
+      }
+    } catch (e) { /* 忽略 */ }
   } catch (err) {
     console.error('[init] getUserMedia 失败:', err.message);
     hint.textContent = '⚠️ 需要摄像头和麦克风权限'; hint.className = 'text-xs text-red-400';
