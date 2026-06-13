@@ -4,12 +4,28 @@
 import { settings } from './settings.js';
 import { appendBubble, updateBubbleText } from './ui.js';
 
+// 构建通用请求体（含 Key + Provider）
+function buildBody(audioBase64, frame, apiHistory) {
+  return {
+    audio: audioBase64,
+    frame,
+    history: apiHistory,
+    model: settings.model,
+    asr_provider: settings.asrProvider,
+    asr_api_key: settings.asrApiKey,
+    asr_secret_key: settings.asrSecretKey,
+    llm_provider: settings.llmProvider,
+    llm_api_key: settings.llmApiKey,
+    tts_provider: settings.ttsProvider,
+  };
+}
+
 // ── 流式对话（SSE） ──
 export async function streamChat(audioBase64, frame, apiHistory) {
   const resp = await fetch('/api/chat/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ audio: audioBase64, frame, history: apiHistory, model: settings.model }),
+    body: JSON.stringify(buildBody(audioBase64, frame, apiHistory)),
   });
 
   if (!resp.ok) throw new Error(`Stream HTTP ${resp.status}`);
@@ -98,7 +114,7 @@ export async function chatNormal(audioBase64, frame, apiHistory) {
   const resp = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ audio: audioBase64, frame, history: apiHistory, model: settings.model }),
+    body: JSON.stringify(buildBody(audioBase64, frame, apiHistory)),
   });
   const data = await resp.json();
   if (!resp.ok || data.error) throw new Error(data.error || '请求失败');

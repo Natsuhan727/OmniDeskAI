@@ -24,15 +24,21 @@ export default async function handler(req) {
     return new Response(null, {
       headers: {
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type',
       },
     });
   }
+
+  // GET /api/config — 告知前端哪些 Key 已通过环境变量配置
+  if (req.method === 'GET' && pathname.endsWith('/config')) return handleConfig();
+
   if (req.method !== 'POST') {
     return json(405, { text: null, audio: null, error: '仅支持 POST' });
   }
 
+  // POST /api/ping — 测试连接
+  if (pathname.endsWith('/ping')) return handlePing(req);
   if (pathname.endsWith('/stream')) return handleStream(req);
   if (pathname.endsWith('/tts')) return handleTTS(req);
   // 默认: 非流式 /api/chat（Phase 2 行为不变）
@@ -215,6 +221,39 @@ async function handleTTS(req) {
   };
   const ttsResult = await synthesizeSpeech(text, ttsCfg);
   return json(200, { audio: ttsResult.audio });
+}
+
+// ═══════════════════════════════════════════════
+//  通用端点 — GET /api/config, POST /api/ping
+// ═══════════════════════════════════════════════
+
+function handleConfig() {
+  return json(200, {
+    asr_configured: !!(process.env.ASR_API_KEY),
+    llm_configured: !!(process.env.LLM_API_KEY),
+  });
+}
+
+async function handlePing(req) {
+  let body;
+  try { body = await req.json(); } catch {
+    return json(400, { ok: false, error: '请求格式错误' });
+  }
+
+  const llmCfg = {
+    provider: body.llm_provider || process.env.LLM_PROVIDER || 'dashscope',
+    apiKey: body.llm_api_key || process.env.LLM_API_KEY,
+    baseUrl: body.llm_base_url || process.env.LLM_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  };
+
+  try {
+    // 用 1x1 透明 JPEG + 固定短问题测试 LLM 连通性
+    const pingFrame = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAIBAQEBAQIBAQECAgICAgQDAgICAgUEBAMEBgUGBgYFBgYGBwkIBgcJBwYGCAsICQoKCgoKBggLDAsKDAkKCgr/2wBDAQICAgICAgUDAwUKBwYHCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgr/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYI4Q/SFJicUoJjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6usLDxMXGx8jJytLT1NXW19jZ2uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD3+iiigD//2Q==';
+    const result = await chatWithVision(pingFrame, 'ping', [], llmCfg);
+    return json(200, { ok: !result.error, error: result.error || null });
+  } catch (err) {
+    return json(500, { ok: false, error: err.message });
+  }
 }
 
 // ═══════════════════════════════════════════════
