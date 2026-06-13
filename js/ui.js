@@ -82,8 +82,10 @@ export function updateBubbleText(wrapper, newText) {
 export function showErrorBubble(msg) {
   const wrapper = document.createElement('div');
   wrapper.className = 'msg-bubble flex justify-center';
-  wrapper.innerHTML = `<div class="max-w-[85%] bg-red-900/50 border border-red-700/50 rounded-xl px-3 py-2"><p class="text-red-300 text-xs">${escapeHtml(msg)}</p></div>`;
+  const dismiss = () => { if (wrapper.parentNode) wrapper.remove(); };
+  wrapper.innerHTML = `<div class="max-w-[85%] bg-red-900/50 border border-red-700/50 rounded-xl px-3 py-2 flex items-start gap-2"><p class="text-red-300 text-xs flex-1">${escapeHtml(msg)}</p><button class="text-red-400 hover:text-red-200 text-xs font-bold leading-none mt-0.5">✕</button></div>`;
+  wrapper.querySelector('button').addEventListener('click', dismiss);
   messageList.appendChild(wrapper);
   messageList.scrollTop = messageList.scrollHeight;
-  setTimeout(() => { if (wrapper.parentNode) wrapper.remove(); }, 3500);
+  setTimeout(dismiss, 6000);
 }
