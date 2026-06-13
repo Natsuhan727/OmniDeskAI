@@ -1,0 +1,447 @@
+---
+title: PRD - Phase 4
+project: AI 视觉对话助手
+phase: 4
+status: ready-to-build
+created: 2026-06-13
+target: AI agent
+requires: Phase 1-3 已完成
+---
+
+# PRD: AI 视觉对话助手 — Phase 4
+
+> Phase 1-3：功能完整。
+> Phase 4 目标：**零部署配置。用户打开网页，在设置面板里填 Key，即刻可用。**
+
+---
+
+## 1. 核心变更：配置从环境变量迁移到应用内
+
+### 1.1 改了什么
+
+| 之前 | 之后 |
+|------|------|
+| 部署前 `vercel env add` 配 5+ 环境变量 | 部署零配置，打开即用 |
+| 换 Key 要重新部署 | 设置面板里粘贴 Key，即时生效 |
+| 新人不知道怎么注册百度/阿里云 | 设置面板旁边有链接和指引 |
+| 只能部署时配，不可运行时改 | 随时改，刷新保持（localStorage） |
+
+### 1.2 向后兼容
+
+后端 Key 读取优先级：**请求体 > 环境变量 > 默认值**。
+
+已部署的 Vercel 实例无影响——环境变量仍然生效。新用户不设环境变量也能用。
+
+```js
+const asrKey = body.asr_api_key || process.env.ASR_API_KEY;
+const llmKey = body.llm_api_key || process.env.LLM_API_KEY;
+```
+
+---
+
+## 2. Phase 4 改进项
+
+| # | 改进 | 优先级 | 说明 |
+|---|------|:--:|------|
+| F1 | **ASR/LLM/TTS Key 进设置面板** | P0 | 零部署配置。用户打开网页填 Key 即用 |
+| F2 | **新增 DashScope ASR Provider** | P0 | 一个 Key 搞定 ASR + LLM |
+| F3 | **后端接收请求内 Key** | P0 | 优先用 `body.asr_api_key`，fallback 到 `process.env` |
+| F4 | **打断后直接进入录音** | P1 | 打断 AI 后立即开始录音 |
+| F5 | **首次使用引导** | P1 | 空状态引导文案，首次成功回复后消失 |
+| F6 | **降级时视觉反馈** | P2 | 非流式降级时显示 loading 占位符 |
+| F7 | **错误提示优化** | P2 | 延长到 6s + 手动关闭按钮 |
+
+---
+
+## 3. F1+F2+F3: 零部署配置
+
+### 3.1 设置面板改造（含首次配置向导）
+
+当前设置面板有 3 个控件。Phase 4 根据"是否已配置"展示两种模式：
+
+**模式 A：已配置（环境变量或之前填过）**
+
+折叠面板，和 Phase 3 界面一样。已配字段标注 ✓。
+
+**模式 B：未配置（首次打开）**
+
+自动展开面板，顶部显示"快速配置向导"而非直接展示全部字段：
+
+```
+┌───────────────────────────────────┐
+│ ⚙️ 设置                      ▲    │
+├───────────────────────────────────┤
+│ 👋 首次使用，请选择配置场景：     │
+│                                   │
+│ ○ 我有阿里云百炼账号              │
+│   → ASR + LLM 一个 Key            │
+│                                   │
+│ ○ 我有百度 AI 账号                │
+│   → 高质量中文语音识别            │
+│                                   │
+│ ○ 我都有                          │
+│                                   │
+│ 选择后展示对应字段：              │
+│                                   │
+│ ▸ 阿里云场景：                    │
+│   DashScope Key: [__________] [🔗]│
+│   百度 TTS Key:  [__________] [🔗]│
+│   模型:          [qwen-vl-plus]   │
+│                                   │
+│ ▸ 百度场景：                      │
+│   百度 API Key:  [__________] [🔗]│
+│   百度 Secret:   [__________]     │
+│   DashScope Key: [__________] [🔗]│
+│                                   │
+│   [🔗] = 点击弹出注册指引         │
+│                                   │
+│   [测试连接]                       │
+│                                   │
+│ ── 其他 ──                        │
+│ TTS 开关: [✓]                     │
+│ 帧质量:   [60% ───○──]            │
+└───────────────────────────────────┘
+```
+
+### 3.1a 场景选择器的行为
+
+- 三个单选项，默认"阿里云"（门槛最低）
+- 切换场景时动态展开/收起对应字段
+- 阿里云场景：只需 DashScope Key + 百度 Key（TTS 用）
+- 百度场景：百度 Key（ASR+TTS）+ DashScope Key（LLM）
+- "我都有"场景：展开全部字段
+
+### 3.1b "提供商"下拉
+
+- 如果一个 Provider 只有一个实现（如 LLM 只有 dashscope），**不显示下拉**——显示为说明文字"DashScope"
+- 有多个时才显示下拉（如 ASR 有 baidu + dashscope）
+- TTS 只有 baidu 时也不显示下拉
+
+### 3.1c "复用 Key"逻辑
+
+- 百度场景：TTS 复用 ASR 的百度 Key → 不显示额外 TTS Key 输入框
+- 阿里云场景：TTS 需要百度 Key → 显示独立输入框
+
+### 3.1d 测试连接按钮
+
+- 点击后发一个轻量请求：`POST /api/ping`（后端做一次最小 ASR + LLM 调用，用一段固定短音频测试）
+- 成功 → 显示绿色 ✓ "连接成功"
+- 失败 → 显示红色错误信息
+- `/api/ping` 不返回实际对话内容，只返回 `{ ok: true }` 或 `{ ok: false, error: "..." }`
+
+```js
+// api/chat.js 路由分发加一条
+if (req.method === 'POST' && url.pathname.endsWith('/ping')) return handlePing(req);
+
+async function handlePing(req) {
+  const body = await req.json();
+  const llmCfg = {
+    provider: body.llm_provider || process.env.LLM_PROVIDER || 'dashscope',
+    apiKey: body.llm_api_key || process.env.LLM_API_KEY,
+    baseUrl: body.llm_base_url || process.env.LLM_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  };
+  try {
+    // 用 1x1 像素图 + 固定短问题测试 LLM 连接
+    const result = await chatWithVision('data:image/jpeg;base64,...', 'ping', [], llmCfg);
+    return json(200, { ok: !result.error, error: result.error || null });
+  } catch (err) {
+    return json(500, { ok: false, error: err.message });
+  }
+}
+```
+
+### 3.2 字段行为细节
+
+- Key 输入框 `type="password"`，点 👁 切换明文
+- 旁边 `?` 图标 **点击**弹出注册链接和指引（移动端兼容，不依赖 hover）
+- 环境变量已配置 → placeholder 显示 `✓ 已通过环境变量配置`，输入框禁用
+- 只有一个选项的 Provider → 不显示下拉，直接显示标签文字
+- ASR 选 dashscope 时，TTS 部分显示独立 Key 输入框（不复用）
+
+### 3.3 后端 `/api/config` 端点
+
+前端需要知道哪些 Key 已通过环境变量配置。新增一个轻量端点：
+
+```js
+// api/chat.js — 路由分发提到 method 检查之前（GET 请求也需要放行）
+const url = new URL(req.url);
+
+if (req.method === 'OPTIONS') { /* CORS 预检 */ }
+if (req.method === 'GET' && url.pathname.endsWith('/config')) return handleConfig();
+if (req.method !== 'POST') return json(405, { error: '仅支持 POST' });
+
+if (url.pathname.endsWith('/stream')) return handleStream(req);
+if (url.pathname.endsWith('/tts')) return handleTTS(req);
+
+async function handleConfig() {
+  return json(200, {
+    asr_configured: !!(process.env.ASR_API_KEY),
+    llm_configured: !!(process.env.LLM_API_KEY),
+  });
+}
+```
+
+> ⚠️ 关键：`/config` 是 GET 请求，必须放在 `if (req.method !== 'POST')` 检查**之前**。
+
+前端根据返回决定 placeholder 文案：
+- 已配置 → placeholder="已通过环境变量配置" + 输入框禁用
+- 未配置 → placeholder="在此粘贴 Key" + 输入框可编辑
+
+### 3.4 请求发送
+
+每次 `/api/chat` 请求携带所有 Key：
+
+```json
+{
+  "audio": "...",
+  "frame": "...",
+  "history": [...],
+  "asr_api_key": "sk-xxx",
+  "asr_secret_key": "xxx",
+  "llm_api_key": "sk-xxx",
+  "model": "qwen-vl-plus",
+  "tts_provider": "baidu"
+}
+```
+
+前端从 `settings` 单例取值。后端按"请求体 > 环境变量"优先级读取。
+
+### 3.5 后端读取逻辑
+
+```js
+// processAudio 接收 asrCfg 并透传给 transcribeAudio
+const asrProvider = body.asr_provider || process.env.ASR_PROVIDER || 'baidu';
+const asrKey = body.asr_api_key || process.env.ASR_API_KEY;
+const asrSecret = body.asr_secret_key || process.env.ASR_SECRET_KEY;
+
+// handler 和 handleStream 中
+const llmKey = body.llm_api_key || process.env.LLM_API_KEY;
+const llmProvider = body.llm_provider || process.env.LLM_PROVIDER || 'dashscope';
+const ttsProvider = body.tts_provider || process.env.TTS_PROVIDER || 'baidu';
+```
+
+> Provider 函数签名需要增加参数。handler 侧组装 cfg 对象并透传：
+
+```js
+// handler 中组装三个 Provider 的配置
+const asrCfg = {
+  provider: body.asr_provider || process.env.ASR_PROVIDER || 'baidu',
+  apiKey: body.asr_api_key || process.env.ASR_API_KEY,
+  secretKey: body.asr_secret_key || process.env.ASR_SECRET_KEY,
+};
+const llmCfg = {
+  provider: body.llm_provider || process.env.LLM_PROVIDER || 'dashscope',
+  apiKey: body.llm_api_key || process.env.LLM_API_KEY,
+  baseUrl: body.llm_base_url || process.env.LLM_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+};
+const ttsCfg = {
+  provider: body.tts_provider || process.env.TTS_PROVIDER || 'baidu',
+  apiKey: body.asr_api_key || process.env.ASR_API_KEY,        // 复用 ASR Key
+  secretKey: body.asr_secret_key || process.env.ASR_SECRET_KEY,
+};
+
+// 透传给各层
+const proc = await processAudio(body, asrCfg);
+const llmResult = await chatWithVision(frame, text, history, llmCfg);
+const ttsResult = await synthesizeSpeech(text, ttsCfg);
+```
+
+> Provider 函数签名需要增加参数。`processAudio` 签名从 `processAudio(body)` 改为 `processAudio(body, asrCfg)`，内部将 `asrCfg` 透传给 `transcribeAudio`。`handleStream` 中同样。
+
+### 3.6 Provider 签名变更
+
+当前 Provider 直接读 `process.env`：
+
+### 3.7 Provider 签名变更（完整版）
+
+每个 Provider 不再读 `process.env`。provider 名和 credentials 都从参数传入。
+
+```js
+// ── 之前 ──
+async function asrBaidu(audioBase64) {
+  const apiKey = process.env.ASR_API_KEY;  // 直接读 env
+  ...
+}
+
+// ── 之后 ──
+async function asrBaidu(audioBase64, { apiKey, secretKey }) {
+  ...
+}
+
+// Provider 选择也参数化
+async function transcribeAudio(audioBase64, { provider, apiKey, secretKey }) {
+  const fn = asrProviders[provider];
+  if (!fn) return { text: null, error: `未知 ASR: ${provider}`, status: 500 };
+  return fn(audioBase64, { apiKey, secretKey });
+}
+```
+
+同样改造：
+- `chatWithVision(frame, text, history, { provider, apiKey, baseUrl })` — 选择 LLM Provider + 传入 Key
+- `synthesizeSpeech(text, { provider, apiKey, secretKey })` — 选择 TTS Provider + 传入 Key
+- `llmDashScope(frame, text, history, { apiKey, baseUrl })` — 不再从 env 读 Key 和 URL
+- `ttsProviders.baidu(text, { apiKey, secretKey })` — 不再从 env 读 Key
+
+**改动范围**：三个 dispatch 函数（transcribeAudio/chatWithVision/synthesizeSpeech）+ 三个 Provider 实现（asrBaidu/llmDashScope/ttsProviders.baidu）
+
+---
+
+## 4. F4: 新增 DashScope ASR Provider
+
+### 4.1 为什么
+
+一个 DashScope Key 同时覆盖 ASR + LLM。用户只需注册阿里云，不需要百度。
+
+### 4.2 实现
+
+DashScope Paraformer REST API 需要 `file_urls`。通过 DashScope Files API 实现临时上传：
+
+```
+1. 收到 audio base64 → 解码为 Uint8Array
+2. POST DashScope Files API 上传 → 获取临时 URL（48h 有效）
+3. POST Paraformer ASR API { file_urls: [tempUrl] } → 获取 task_id
+4. 轮询 GET /api/v1/tasks/{task_id} → 获取 transcription_url
+5. 下载识别文字
+```
+
+### 4.3 Provider 注册
+
+```js
+const asrProviders = {
+  baidu: asrBaidu,
+  dashscope: asrDashScope,   // 新增
+};
+```
+
+用户设置面板里 ASR 提供商选 `dashscope`，填入 DashScope Key——ASR + LLM 就全通了。
+
+### 4.4 注意
+
+- 轮询间隔 1s，超时 10s
+- Files API 限流 100 QPS（Demo 场景够用）
+- 临时 URL 48h 后失效（每次调用都重新上传，不需要长期存储）
+
+---
+
+## 5. F5: 打断后直接进入录音
+
+### 5.1 当前交互
+
+```
+AI 播报中 → 用户按住 → 停止播放 → 回到 idle → 需要松手再按
+```
+
+### 5.2 改为
+
+```
+AI 播报中 → 用户按住 → 停止播放 → 立即开始录音
+```
+
+### 5.3 实现
+
+`js/app.js` 的 `onButtonDown`——打断块去掉 `return`，加 `isProcessing = false`：
+
+```js
+if (currentAudio && !currentAudio.paused) {
+    currentAudio.pause();
+    currentAudio = null;
+    isProcessing = false;
+    // 不 return，继续执行录音逻辑
+}
+if (isProcessing || !stream) return;
+// ... 录音
+```
+
+---
+
+## 6. F6: 首次使用引导
+
+- 空状态分两阶段：未授权 → "请允许摄像头和麦克风"；已授权从未对话 → 3 步骤引导文案
+- 标记存 `localStorage.hasConversed`
+- 首次成功回复后引导永久消失
+
+---
+
+## 7. F7: 降级时视觉反馈
+
+流式失败降级到非流式时，在消息列表中插入 pulsating placeholder：
+
+```js
+const placeholder = appendBubble('assistant', '⏳ AI 正在组织语言...');
+placeholder.querySelector('p').classList.add('animate-pulse');
+// 拿到回复后 updateBubbleText 替换
+```
+
+---
+
+## 8. F8: 错误提示优化
+
+- 错误气泡显示时长 3.5s → 6s
+- 右侧加 `✕` 关闭按钮
+
+---
+
+## 9. README 简化
+
+部署步骤从"注册两个平台 + 配环境变量"缩减为：
+
+```
+部署: vercel --prod
+使用: 打开网页 → 设置 → 填入 Key → 开始对话
+```
+
+提示两种配置路径：
+- 路径 A：只填 DashScope Key（ASR 选 dashscope + LLM）+ 百度 Key（TTS）
+- 路径 B：填百度 Key（ASR + TTS）+ DashScope Key（LLM）
+
+---
+
+## 10. 安全提醒
+
+- Key 存在 `localStorage` 明文。hackathon demo 可接受，长期应加前端加密或后端 session token
+- 请求体中 Key 走 HTTPS，不会被中间人窃取
+
+---
+
+## 11. 环境变量变化
+
+| 变量 | Phase 3 | Phase 4 |
+|------|:--:|:--:|
+| `ASR_API_KEY` | 必填 | **可选**（可在 UI 填） |
+| `ASR_SECRET_KEY` | 必填 | **可选** |
+| `LLM_API_KEY` | 必填 | **可选** |
+| `LLM_BASE_URL` | 可选 | 可选 |
+| `LLM_MODEL` | 可选 | 可选 |
+| `ASR_PROVIDER` | 可选 | 可选 |
+| `LLM_PROVIDER` | 可选 | 可选 |
+| `TTS_PROVIDER` | 可选 | 可选 |
+
+**全部可选。** 不设任何环境变量，用户打开网页填 Key 就能用。
+
+---
+
+## 12. 验收标准
+
+### 零部署配置
+- [ ] `vercel --prod` 后打开网页，不设任何环境变量
+- [ ] 设置面板显示 ASR/LLM/TTS Key 输入框（placeholder 提示填写）
+- [ ] 填入 Key 后立即生效，下一轮对话带上 Key
+- [ ] 刷新后 Key 保持（localStorage）
+- [ ] 环境变量配置的 Key 显示"已通过环境变量配置"
+
+### DashScope ASR
+- [ ] ASR 提供商选 dashscope，填入 DashScope Key
+- [ ] 正常录音 → 识别文字 → LLM 回复
+
+### 交互改进（同前版）
+- [ ] 打断直接进入录音
+- [ ] 首次引导
+- [ ] 降级 pulsating placeholder
+- [ ] 错误提示 6s 可关闭
+
+---
+
+> **给 AI agent**：
+> 实现顺序：F3（后端 Key 透传）→ F2（DashScope ASR）→ F1（设置面板 UI）→ F5-F8。
+> Provider 签名变更涉及 `asrBaidu`/`llmDashScope`/`ttsProviders.baidu` 三个函数，一并改造。
+> 原环境变量读取全部保留作为 fallback，不影响已部署实例。
