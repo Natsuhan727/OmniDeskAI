@@ -51,54 +51,13 @@
       <span>⚙️ 设置</span>
       <span class="arrow">▲</span>
     </button>
-    <div id="settingsBody" class="px-4 pb-3 space-y-3 text-sm hidden">
-      <!-- DashScope Key（ASR + LLM 通用） -->
-      <div>
-        <div class="flex items-center justify-between mb-1">
-          <span class="text-gray-400 text-xs">DashScope Key <span class="text-gray-600">(LLM + ASR)</span></span>
-          <a href="#" class="reg-link text-blue-400 text-xs hover:underline" data-provider="dashscope">注册指引 →</a>
-        </div>
-        <div class="flex gap-1">
-          <input type="password" id="settingDsKey" class="flex-1 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white text-sm" placeholder="sk-xxx" />
-          <button class="toggle-pwd text-xs px-1">👁</button>
-        </div>
-      </div>
+    <div id="settingsBody" class="px-4 pb-3 space-y-4 text-sm hidden">
+      <!-- Provider 层由 JS 动态渲染 -->
+      <div id="asrSection" class="bg-gray-800/50 rounded-lg p-3 space-y-2"><p class="text-gray-500 text-xs">语音识别 (ASR)</p></div>
+      <div id="llmSection" class="bg-gray-800/50 rounded-lg p-3 space-y-2"><p class="text-gray-500 text-xs">对话模型 (LLM)</p></div>
+      <div id="ttsSection" class="bg-gray-800/50 rounded-lg p-3 space-y-2"><p class="text-gray-500 text-xs">语音合成 (TTS)</p></div>
 
-      <!-- 百度 Key（ASR + TTS） -->
-      <div>
-        <span class="text-gray-400 text-xs">百度 AI Key <span class="text-gray-600">(ASR + TTS)</span></span>
-        <div class="flex gap-1 mt-1">
-          <input type="password" id="settingBdApiKey" class="flex-1 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white text-sm" placeholder="API Key" />
-          <button class="toggle-pwd text-xs px-1">👁</button>
-        </div>
-        <div class="flex gap-1 mt-1">
-          <input type="password" id="settingBdSecret" class="flex-1 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white text-sm" placeholder="Secret Key" />
-          <button class="toggle-pwd text-xs px-1">👁</button>
-        </div>
-        <a href="#" class="reg-link text-blue-400 text-xs hover:underline mt-0.5 inline-block" data-provider="baidu">注册指引 →</a>
-      </div>
-
-      <hr class="border-gray-700/50" />
-
-      <!-- ASR 提供商 -->
-      <div class="flex items-center justify-between">
-        <span class="text-gray-400 text-xs">ASR 提供商</span>
-        <select id="settingAsrProvider" class="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white text-sm">
-          <option value="baidu">百度</option>
-          <option value="dashscope">DashScope</option>
-        </select>
-      </div>
-
-      <!-- 模型 -->
-      <div class="flex items-center justify-between">
-        <span class="text-gray-400 text-xs">模型</span>
-        <select id="settingModel" class="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white text-sm">
-          <option value="qwen-vl-plus">qwen-vl-plus</option>
-          <option value="qwen-vl-max">qwen-vl-max</option>
-        </select>
-      </div>
-
-      <!-- TTS + 帧质量 -->
+      <!-- 其他 -->
       <div class="flex items-center justify-between">
         <span class="text-gray-400 text-xs">TTS 语音</span>
         <input type="checkbox" id="settingTTS" class="w-4 h-4 accent-green-500" />
@@ -111,12 +70,12 @@
         </div>
       </div>
 
-      <!-- 保存 + 测试 -->
+      <!-- 操作 -->
       <div class="flex gap-2">
-        <button id="saveSettings" class="flex-1 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs transition-colors">保存设置</button>
         <button id="testDashScope" class="flex-1 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs transition-colors">测试 DashScope</button>
         <button id="testBaidu" class="flex-1 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs transition-colors">测试百度</button>
       </div>
+      <button id="saveSettings" class="w-full py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs transition-colors">保存设置</button>
       <div id="testResult" class="text-xs text-center"></div>
     </div>
   </div>
