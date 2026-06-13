@@ -224,6 +224,7 @@ async function handleTTS(req) {
 
 const asrProviders = {
   baidu: asrBaidu,
+  dashscope: asrDashScope,
 };
 
 async function transcribeAudio(audioBase64, { provider, apiKey, secretKey }) {
@@ -289,6 +290,110 @@ async function asrBaidu(audioBase64, { apiKey, secretKey }) {
     result = await call(newToken);
   }
   return result;
+}
+
+// DashScope Paraformer ASR（文件上传 → 异步识别 → 轮询结果）
+async function asrDashScope(audioBase64, { apiKey }) {
+  if (!apiKey) return { text: null, error: '未配置 ASR Key', status: 500 };
+
+  try {
+    // 1) 解码 PCM → Uint8Array
+    const binaryStr = atob(audioBase64);
+    const pcmBytes = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) pcmBytes[i] = binaryStr.charCodeAt(i);
+
+    // 2) 上传到 DashScope Files API
+    const formData = new FormData();
+    formData.append('file', new Blob([pcmBytes], { type: 'audio/pcm' }), 'audio.pcm');
+
+    const uploadResp = await fetch('https://dashscope.aliyuncs.com/api/v1/uploads', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: formData,
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (!uploadResp.ok) {
+      const errText = await uploadResp.text().catch(() => '');
+      console.error('[asr-dashscope] upload HTTP', uploadResp.status, errText.slice(0, 300));
+      return { text: null, error: `ASR 文件上传失败 (${uploadResp.status})`, status: 500 };
+    }
+
+    const uploadData = await uploadResp.json();
+    const fileUrl = uploadData.data?.uploaded_files?.[0]?.url;
+    if (!fileUrl) {
+      console.error('[asr-dashscope] upload response:', JSON.stringify(uploadData).slice(0, 300));
+      return { text: null, error: 'ASR 文件上传未返回 URL', status: 500 };
+    }
+
+    // 3) 提交识别任务
+    const taskResp = await fetch('https://dashscope.aliyuncs.com/api/v1/services/audio/asr/paraformer-realtime-v2/async', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ model: 'paraformer-realtime-v2', input: { file_urls: [fileUrl] } }),
+      signal: AbortSignal.timeout(10_000),
+    });
+
+    if (!taskResp.ok) {
+      const errText = await taskResp.text().catch(() => '');
+      console.error('[asr-dashscope] task HTTP', taskResp.status, errText.slice(0, 300));
+      return { text: null, error: `ASR 任务提交失败 (${taskResp.status})`, status: 500 };
+    }
+
+    const taskData = await taskResp.json();
+    const taskId = taskData.output?.task_id;
+    if (!taskId) {
+      console.error('[asr-dashscope] task response:', JSON.stringify(taskData).slice(0, 300));
+      return { text: null, error: 'ASR 未返回 task_id', status: 500 };
+    }
+
+    // 4) 轮询结果（间隔 1s，超时 10s）
+    for (let i = 0; i < 10; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+
+      const pollResp = await fetch(`https://dashscope.aliyuncs.com/api/v1/tasks/${taskId}`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(5_000),
+      });
+
+      if (!pollResp.ok) continue;
+
+      const pollData = await pollResp.json();
+      const status = pollData.output?.task_status;
+
+      if (status === 'SUCCEEDED') {
+        const transcriptionUrl = pollData.output?.results?.[0]?.transcription_url;
+        if (!transcriptionUrl) {
+          return { text: null, error: 'ASR 未返回识别结果 URL', status: 500 };
+        }
+
+        // 5) 下载识别文字
+        const textResp = await fetch(transcriptionUrl, { signal: AbortSignal.timeout(5_000) });
+        if (!textResp.ok) {
+          return { text: null, error: `ASR 下载结果失败 (${textResp.status})`, status: 500 };
+        }
+
+        const textData = await textResp.json();
+        const transcripts = textData.transcription?.map(t => t.text) || [];
+        const text = transcripts.join('');
+        return { text, error: null, status: 200 };
+      }
+
+      if (status === 'FAILED') {
+        return { text: null, error: 'ASR 识别任务失败', status: 500 };
+      }
+      // RUNNING / PENDING → 继续轮询
+    }
+
+    return { text: null, error: 'ASR 识别超时', status: 500 };
+
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      return { text: null, error: 'ASR 请求超时', status: 500 };
+    }
+    console.error('[asr-dashscope] 异常:', err.message);
+    return { text: null, error: `ASR 异常: ${err.message}`, status: 500 };
+  }
 }
 
 async function baiduOAuth(apiKey, secretKey) {
