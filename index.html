@@ -40,8 +40,37 @@
     <p class="text-gray-400 text-xs mt-3">点击任意处或按 Esc 关闭</p>
   </div>
 
+  <!-- Settings Panel -->
+  <div id="settingsPanel" class="w-full max-w-lg bg-gray-900/50 border border-gray-700/50 rounded-xl overflow-hidden shrink-0">
+    <button id="settingsToggle" class="w-full flex items-center justify-between px-4 py-2 text-gray-400 hover:text-white transition-colors text-sm">
+      <span>⚙️ 设置</span>
+      <span class="arrow">▲</span>
+    </button>
+    <div id="settingsBody" class="px-4 pb-3 space-y-2 text-sm">
+      <div class="flex items-center justify-between">
+        <span class="text-gray-400">模型</span>
+        <select id="settingModel" class="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white text-sm">
+          <option value="qwen-vl-plus">qwen-vl-plus</option>
+          <option value="qwen-vl-max">qwen-vl-max</option>
+        </select>
+      </div>
+      <div class="flex items-center justify-between">
+        <span class="text-gray-400">TTS 语音</span>
+        <input type="checkbox" id="settingTTS" class="w-4 h-4 accent-green-500" />
+      </div>
+      <div class="flex items-center justify-between">
+        <span class="text-gray-400">帧质量</span>
+        <div class="flex items-center gap-2">
+          <input type="range" id="settingQuality" min="0.4" max="0.8" step="0.2" class="w-20 h-1 accent-blue-500" />
+          <span id="settingQualityLabel" class="text-gray-300 w-10 text-right">60%</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script type="module">
   import { webmToPcmBase64 } from './js/audio-converter.js';
+  import { settings, initSettingsPanel } from './js/settings.js';
 
   let stream = null;
   let isProcessing = false;
@@ -178,7 +207,7 @@
 
   // ─── TTS 播放 ───
   function playAudio(audioBase64) {
-    if (!audioBase64) return;
+    if (!audioBase64 || !settings.ttsEnabled) return;
     setButtonState('speaking');
     currentAudio = new Audio('data:audio/mp3;base64,' + audioBase64);
     currentAudio.onended = () => { currentAudio = null; resetToIdle(); };
@@ -209,6 +238,7 @@
     talkBtn.addEventListener('mouseleave', onButtonUp);
     talkBtn.addEventListener('touchstart', onButtonDown, { passive: false });
     talkBtn.addEventListener('touchend', onButtonUp);
+    initSettingsPanel();
     console.log('[init] 就绪');
   }
 
@@ -267,7 +297,7 @@
 
       // 抓帧
       ctx.drawImage(video, 0, 0, 640, 480);
-      const frame = canvas.toDataURL('image/jpeg', 0.6);
+      const frame = canvas.toDataURL('image/jpeg', settings.frameQuality);
       console.log('[frame] captured, length:', frame.length);
 
       await sendToAI(audioBase64, frame);
@@ -289,7 +319,7 @@
     const resp = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audio: audioBase64, frame, history: apiHistory }),
+      body: JSON.stringify({ audio: audioBase64, frame, history: apiHistory, model: settings.model }),
     });
 
     if (!resp.ok) throw new Error(`Stream HTTP ${resp.status}`);
@@ -336,18 +366,20 @@
 
     if (!fullText) throw new Error('流式返回为空');
 
-    // 流式结束 → 调 TTS
+    // 流式结束 → 调 TTS（如果启用）
     let audio = null;
-    try {
-      const ttsResp = await fetch('/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: fullText }),
-      });
-      const ttsData = await ttsResp.json();
-      audio = ttsData.audio;
-    } catch (err) {
-      console.error('[tts] 请求失败:', err.message);
+    if (settings.ttsEnabled) {
+      try {
+        const ttsResp = await fetch('/api/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: fullText }),
+        });
+        const ttsData = await ttsResp.json();
+        audio = ttsData.audio;
+      } catch (err) {
+        console.error('[tts] 请求失败:', err.message);
+      }
     }
 
     return { userText, text: fullText, audio };
@@ -358,7 +390,7 @@
     const resp = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audio: audioBase64, frame, history: apiHistory }),
+      body: JSON.stringify({ audio: audioBase64, frame, history: apiHistory, model: settings.model }),
     });
     const data = await resp.json();
     if (!resp.ok || data.error) throw new Error(data.error || '请求失败');
