@@ -240,6 +240,24 @@ async function handlePing(req) {
     return json(400, { ok: false, error: '请求格式错误' });
   }
 
+  const service = body.service || 'dashscope';
+
+  // 测试百度：验证 ASR OAuth Token
+  if (service === 'baidu') {
+    const apiKey = body.asr_api_key || process.env.ASR_API_KEY;
+    const secretKey = body.asr_secret_key || process.env.ASR_SECRET_KEY;
+    if (!apiKey || !secretKey) {
+      return json(200, { ok: false, error: '未配置百度 API Key/Secret' });
+    }
+    try {
+      const token = await baiduOAuth(apiKey, secretKey);
+      return json(200, { ok: !!token, error: null });
+    } catch (err) {
+      return json(200, { ok: false, error: `百度鉴权失败: ${err.message}` });
+    }
+  }
+
+  // 测试 DashScope：验证 LLM 连通性
   const llmCfg = {
     provider: body.llm_provider || process.env.LLM_PROVIDER || 'dashscope',
     apiKey: body.llm_api_key || process.env.LLM_API_KEY,
@@ -247,7 +265,6 @@ async function handlePing(req) {
   };
 
   try {
-    // 纯文本请求测试 LLM 连通性（无需图片）
     const resp = await fetch(`${llmCfg.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${llmCfg.apiKey}` },

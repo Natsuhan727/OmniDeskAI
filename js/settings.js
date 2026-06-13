@@ -134,33 +134,36 @@ function bindSettingsControls() {
     });
   });
 
-  // 测试连接
-  const testBtn = document.getElementById('testConnection');
-  if (testBtn) {
-    testBtn.addEventListener('click', async () => {
+  // 测试连接: DashScope
+  wireTestButton('testDashScope', { service: 'dashscope', llm_api_key: settings.llmApiKey });
+  // 测试连接: 百度
+  wireTestButton('testBaidu', { service: 'baidu', asr_api_key: settings.asrApiKey, asr_secret_key: settings.asrSecretKey });
+
+  function wireTestButton(btnId, body) {
+    const btn = document.getElementById(btnId);
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
       const resultEl = document.getElementById('testResult');
-      testBtn.disabled = true;
-      testBtn.textContent = '⏳ 测试中...';
+      const label = btnId === 'testDashScope' ? 'DashScope' : '百度';
+      btn.disabled = true;
+      btn.textContent = '⏳ 测试中...';
       try {
         const resp = await fetch('/api/ping', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            llm_api_key: settings.llmApiKey,
-            llm_base_url: settings.llmProvider === 'dashscope' ? 'https://dashscope.aliyuncs.com/compatible-mode/v1' : undefined,
-          }),
+          body: JSON.stringify(body),
         });
         const data = await resp.json();
         if (data.ok) {
-          resultEl.innerHTML = '<span class="text-green-400">✓ 连接成功</span>';
+          resultEl.innerHTML = `<span class="text-green-400">✓ ${label} 连接成功</span>`;
         } else {
-          resultEl.innerHTML = '<span class="text-red-400">✗ ' + (data.error || '连接失败') + '</span>';
+          resultEl.innerHTML = `<span class="text-red-400">✗ ${label}: ${data.error || '连接失败'}</span>`;
         }
       } catch (err) {
-        resultEl.innerHTML = '<span class="text-red-400">✗ 网络错误</span>';
+        resultEl.innerHTML = `<span class="text-red-400">✗ ${label}: 网络错误</span>`;
       }
-      testBtn.disabled = false;
-      testBtn.textContent = '测试连接';
+      btn.disabled = false;
+      btn.textContent = '测试 ' + label;
     });
   }
 
