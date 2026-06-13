@@ -5,6 +5,7 @@ import { webmToPcmBase64 } from './audio-converter.js';
 import { settings, initSettingsPanel } from './settings.js';
 import { appendBubble, showErrorBubble } from './ui.js';
 import { streamChat, chatNormal } from './chat-api.js';
+import { personalContext } from './personal-context.js';
 
 // ── 全局状态 ──
 let stream = null;
@@ -193,6 +194,10 @@ async function init() {
     hint.textContent = '⚠️ 需要摄像头和麦克风权限'; hint.className = 'text-xs text-red-400';
     talkBtn.disabled = true; return;
   }
+  // 初始化 Personal Context
+  await personalContext.init();
+  console.log('[init] personalContext:', personalContext.get() ? '已配置' : '空');
+
   talkBtn.addEventListener('mousedown', onButtonDown);
   talkBtn.addEventListener('mouseup', onButtonUp);
   talkBtn.addEventListener('mouseleave', onButtonUp);
