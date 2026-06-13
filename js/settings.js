@@ -84,7 +84,6 @@ export async function initSettingsPanel() {
   }
 
   renderAllSections();
-  renderTestButtons();
   bindStaticControls();
 }
 
@@ -162,8 +161,29 @@ function renderSection(kind, label) {
     html += `<a href="#" class="reg-link text-blue-400 text-xs hover:underline inline-block" data-url="${provider.link}">注册指引 →</a>`;
   }
 
+  // 测试按钮（每层独立）
+  const labelMap = { asr: 'ASR', llm: 'LLM', tts: 'TTS' };
+  html += `<div class="flex items-center gap-2 pt-1"><button id="test_${kind}" class="py-1 px-3 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs transition-colors">测试 ${labelMap[kind]}</button><span id="result_${kind}" class="text-xs"></span></div>`;
+
   section.innerHTML = html;
   bindSectionEvents(kind, providers, single);
+
+  // 绑定测试按钮
+  const testBtn = section.querySelector(`#test_${kind}`);
+  if (testBtn) testBtn.addEventListener('click', async () => {
+    const resultEl = section.querySelector(`#result_${kind}`);
+    testBtn.disabled = true; testBtn.textContent = '⏳';
+    try {
+      const provider = providers.find(p => p.id === settings[kind + 'Provider']) || providers[0];
+      const body = { service: provider.id };
+      if (kind === 'llm') body.llm_api_key = settings.llmApiKey;
+      else { body.asr_api_key = settings.asrApiKey; body.asr_secret_key = settings.asrSecretKey; }
+      const r = await fetch('/api/ping', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const d = await r.json();
+      resultEl.innerHTML = d.ok ? '<span class="text-green-400">✓ 正常</span>' : `<span class="text-red-400">✗ ${d.error || '失败'}</span>`;
+    } catch (e) { resultEl.innerHTML = '<span class="text-red-400">✗ 网络错误</span>'; }
+    testBtn.disabled = false; testBtn.textContent = `测试 ${labelMap[kind]}`;
+  });
 }
 
 // ── 事件绑定（仅在 section 内查询） ──
@@ -221,37 +241,6 @@ function bindSectionEvents(kind, providers, single) {
 }
 
 function sectionLabel(k) { return { asr: '语音识别 (ASR)', llm: '对话模型 (LLM)', tts: '语音合成 (TTS)' }[k] || ''; }
-
-// ── 按能力层生成测试按钮 ──
-function renderTestButtons() {
-  const container = document.getElementById('testButtons');
-  if (!container) return;
-  const labels = { asr: 'ASR', llm: 'LLM', tts: 'TTS' };
-  let html = '';
-  for (const kind of ['asr', 'llm', 'tts']) {
-    html += `<button id="test_${kind}" class="flex-1 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs transition-colors">测试 ${labels[kind]}</button>`;
-  }
-  container.innerHTML = html;
-
-  for (const kind of ['asr', 'llm', 'tts']) {
-    const btn = document.getElementById(`test_${kind}`);
-    if (!btn) continue;
-    btn.addEventListener('click', async () => {
-      const resultEl = document.getElementById('testResult');
-      btn.disabled = true; btn.textContent = '⏳';
-      try {
-        const provider = providerMeta[kind]?.find(p => p.id === settings[kind + 'Provider']);
-        const body = { service: provider?.id || 'dashscope' };
-        if (kind === 'llm') body.llm_api_key = settings.llmApiKey;
-        else { body.asr_api_key = settings.asrApiKey; body.asr_secret_key = settings.asrSecretKey; }
-        const r = await fetch('/api/ping', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        const d = await r.json();
-        resultEl.innerHTML = d.ok ? `<span class="text-green-400">✓ ${labels[kind]} 连接成功</span>` : `<span class="text-red-400">✗ ${labels[kind]}: ${d.error || '失败'}</span>`;
-      } catch (e) { resultEl.innerHTML = `<span class="text-red-400">✗ ${labels[kind]}: 网络错误</span>`; }
-      btn.disabled = false; btn.textContent = `测试 ${labels[kind]}`;
-    });
-  }
-}
 
 // ── 静态控件 ──
 function bindStaticControls() {
