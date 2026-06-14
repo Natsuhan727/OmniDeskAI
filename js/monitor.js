@@ -3,7 +3,7 @@
 // 依赖注入模式，不直接依赖任何模块
 
 export function createMonitor(deps) {
-  const { captureFrame, getConversationHistory, onObservation, onSpeaking, onError, config } = deps;
+  const { captureFrame, getConversationHistory, onObservation, onSpeaking, onError, onSpeechStart, onSpeechEnd, config } = deps;
 
   // ── 默认值 ──
   const cfg = config || {};
@@ -51,7 +51,7 @@ export function createMonitor(deps) {
       text,
       frameHash: state.lastFrame ? simpleHash(state.lastFrame.slice(-200)) : '',
     });
-    while (observationContext.length > 3) observationContext.shift();
+    while (observationContext.length > (cfg.ctxMax || 3)) observationContext.shift();
   }
 
   // ── 变化检测 ──
@@ -150,6 +150,112 @@ export function createMonitor(deps) {
     }
   }
 
+  // ── VAD（语音活动检测） ──
+  const vad = {
+    audioCtx: null,
+    analyser: null,
+    listening: false,
+    rafId: null,
+    threshold: cfg.vadThreshold || 0.02,
+    silenceDuration: cfg.vadSilence || 1500,
+    silenceTimer: null,
+    isRecording: false,
+
+    init(stream) {
+      if (this.audioCtx) this.destroy();
+      try {
+        this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (this.audioCtx.state === 'suspended') {
+          this.audioCtx.resume();
+        }
+        const source = this.audioCtx.createMediaStreamSource(stream);
+        this.analyser = this.audioCtx.createAnalyser();
+        this.analyser.fftSize = 256;
+        source.connect(this.analyser);
+        console.log('[vad] init OK, state:', this.audioCtx.state, 'stream active:', stream.active);
+        return true;
+      } catch (e) {
+        console.error('[vad] init failed:', e.message);
+        return false;
+      }
+    },
+
+    isSpeaking() {
+      if (!this.analyser) return false;
+      const data = new Uint8Array(this.analyser.frequencyBinCount);
+      this.analyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = (data[i] - 128) / 128; // 归一化到 [-1, 1]
+        sum += v * v;
+      }
+      const rms = Math.sqrt(sum / data.length);
+      return rms > this.threshold;
+    },
+
+    startListening() {
+      if (this.listening) return;
+      this.listening = true;
+      this._paused = false;
+      this._recordStartTime = 0;
+      const loop = () => {
+        if (!this.listening) return;
+        this.rafId = requestAnimationFrame(loop);
+        if (this._paused) return; // 发送中暂停检测
+
+        if (!this.isSpeaking()) {
+          if (this.isRecording && this.silenceTimer === null) {
+            this.silenceTimer = Date.now();
+          }
+          if (this.isRecording && this.silenceTimer && (Date.now() - this.silenceTimer >= this.silenceDuration)) {
+            this.isRecording = false;
+            this.silenceTimer = null;
+            this._paused = true; // 发送期间暂停
+            if (onSpeechEnd) onSpeechEnd();
+          }
+        } else {
+          this.silenceTimer = null;
+          if (!this.isRecording && !this._paused) {
+            this.isRecording = true;
+            this._recordStartTime = Date.now();
+            if (onSpeechStart) onSpeechStart();
+          }
+          // 最大录音 15 秒，防止无限录制
+          if (this.isRecording && (Date.now() - this._recordStartTime > 15000)) {
+            this.isRecording = false;
+            this.silenceTimer = null;
+            this._paused = true;
+            if (onSpeechEnd) onSpeechEnd();
+          }
+        }
+      };
+      loop();
+    },
+
+    resumeAfterSend() {
+      this._paused = false;
+      this.isRecording = false;
+      this.silenceTimer = null;
+    },
+
+    stopListening() {
+      this.listening = false;
+      if (this.rafId) { cancelAnimationFrame(this.rafId); this.rafId = null; }
+      this.isRecording = false;
+      this.silenceTimer = null;
+      this._paused = false;
+    },
+
+    destroy() {
+      this.stopListening();
+      if (this.audioCtx) { this.audioCtx.close(); this.audioCtx = null; this.analyser = null; }
+    },
+  };
+
+  // 静默观察的闭包变量
+  let _silentObserve = false;
+  const _recentFrames = [];
+
   // ── 公共接口 ──
   return {
     start(intervalMs) {
@@ -196,8 +302,56 @@ export function createMonitor(deps) {
       return textSimilarity(text1, text2) > (cfg.similarityThreshold || 0.70);
     },
 
-    getState() { return { ...state }; },
+    // 静默观察：只积累帧，不触发 onObservation 回调
+    enableSilentObserve() {
+      console.log('[monitor] enableSilentObserve start, interval:', interval);
+      state.mode = 'observing';
+      state.lastFrame = captureFrame();
+      state.frameCount = 0;
+      state.suppressedCount = 0;
+      observationContext.length = 0;
+      _recentFrames.length = 0;
+      _silentObserve = true;
+      state.timer = setInterval(async () => {
+        if (!_silentObserve) return;
+        const frame = captureFrame();
+        if (!frame) return;
+        const similar = await changeDetector.isSimilar(frame, state.lastFrame);
+        if (similar) { state.suppressedCount++; return; }
+        state.frameCount++;
+        state.lastFrame = frame;
+        _recentFrames.push(frame);
+        console.log('[monitor] silent frame captured, total:', _recentFrames.length, 'frameCount:', state.frameCount, 'suppressed:', state.suppressedCount);
+        while (_recentFrames.length > 10) _recentFrames.shift();
+      }, interval);
+    },
+    disableSilentObserve() {
+      _silentObserve = false;
+      clearInterval(state.timer);
+      state.timer = null;
+      state.mode = 'idle';
+    },
+    isSilentObserving() { return _silentObserve; },
+    getRecentFrames(max) { return [..._recentFrames].slice(-(max || 5)); },
     getObservationContext() { return [...observationContext]; },
+    getState() {
+      if (vad.listening) return { ...state, mode: 'converse', suppressedCount: state.suppressedCount, frameCount: state.frameCount };
+      return { ...state };
+    },
+
+    // ── 实时对话模式 ──
+    startConversation(stream) {
+      if (!vad.init(stream)) return false;
+      vad.startListening();
+      state.mode = 'converse';
+      return true;
+    },
+    stopConversation() {
+      vad.destroy();
+      state.mode = 'idle';
+    },
+    isConversing() { return vad.listening; },
+    resumeAfterSend() { vad.resumeAfterSend(); },
   };
 }
 

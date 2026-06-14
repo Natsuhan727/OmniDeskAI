@@ -77,7 +77,7 @@ export default async function handler(req) {
 
     // ── 视觉对话 ──
     const tLLM = Date.now();
-    const llmResult = await chatWithVision(frame, userText, conversationHistory, llmCfg, body.personalContext);
+    const llmResult = await chatWithVision(frame, userText, conversationHistory, llmCfg, body.personalContext, body.model, body.maxTokens, body.temperature, body.chatPrompt, body.recentFrames, body.observationContext);
 
     if (llmResult.error) {
       return json(llmResult.status, { text: null, audio: null, error: llmResult.error });
@@ -155,8 +155,8 @@ async function handleStream(req) {
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model,
-        messages: buildMessages(frame, userText, history, body.personalContext),
-        max_tokens: 300, temperature: 0.7, stream: true,
+        messages: buildMessages(frame, userText, history, body.personalContext, body.chatPrompt, body.recentFrames, body.observationContext),
+        max_tokens: body.maxTokens || 300, temperature: body.temperature ?? 0.7, stream: true,
       }),
       signal: AbortSignal.timeout(25_000),
     });
@@ -376,6 +376,7 @@ function handleConfig() {
       LLM_BASE_URL: !!(process.env.LLM_BASE_URL),
     },
     monitorPromptDefault: MONITOR_DEFAULT_PROMPT,
+    chatPromptDefault: DEFAULT_CHAT_PROMPT,
   });
 }
 
@@ -433,7 +434,7 @@ async function handlePing(req) {
         messages: [{ role: 'user', content: 'ping' }],
         max_tokens: 5,
       }),
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(20_000),
     });
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({}));
@@ -667,23 +668,23 @@ const llmProviders = {
   dashscope: llmDashScope,
 };
 
-async function chatWithVision(frame, text, history = [], { provider, apiKey, baseUrl }, personalContext) {
+async function chatWithVision(frame, text, history = [], { provider, apiKey, baseUrl }, personalContext, model, maxTokens, temperature, chatPrompt, recentFrames, observationContext) {
   const fn = llmProviders[provider];
   if (!fn) return { text: null, error: `未知 LLM 供应商: ${provider}`, status: 500 };
-  return fn(frame, text, history, { apiKey, baseUrl }, personalContext);
+  return fn(frame, text, history, { apiKey, baseUrl }, personalContext, model, maxTokens, temperature, chatPrompt, recentFrames, observationContext);
 }
 
-async function llmDashScope(frame, text, history = [], { apiKey, baseUrl }, personalContext) {
+async function llmDashScope(frame, text, history = [], { apiKey, baseUrl }, personalContext, model, maxTokens, temperature, chatPrompt, recentFrames, observationContext) {
   if (!apiKey) {
     return { text: null, error: '服务未配置 LLM Key', status: 500 };
   }
 
-  const model = process.env.LLM_MODEL || 'qwen-vl-plus';
+  const llmModel = model || process.env.LLM_MODEL || 'qwen-vl-plus';
 
   const reqBody = JSON.stringify({
-    model,
-    messages: buildMessages(frame, text, history, personalContext),
-    max_tokens: 300, temperature: 0.7,
+    model: llmModel,
+    messages: buildMessages(frame, text, history, personalContext, chatPrompt, recentFrames, observationContext),
+    max_tokens: maxTokens || 300, temperature: temperature ?? 0.7,
   });
 
   // ── 发送（超时重试 1 次） ──
@@ -723,15 +724,13 @@ async function llmDashScope(frame, text, history = [], { apiKey, baseUrl }, pers
 }
 
 // ── 构造 LLM messages（含视觉记忆） ──
-function buildMessages(frame, text, history, personalContext) {
-  const systemParts = [
-    '你是视觉对话助手。用户给你一张摄像头画面和一个问题。',
-    '结合画面简洁回答。150字以内，口语化，中文。',
-    '不编造不存在的内容。不确定时诚实说明。',
-    '不需要"我看到了..."开场白，直接回答。',
-  ];
+const DEFAULT_CHAT_PROMPT = '你是视觉对话助手。用户给你一张摄像头画面和一个问题。结合画面简洁回答。150字以内，口语化，中文。不编造不存在的内容。不确定时诚实说明。不需要"我看到了..."开场白，直接回答。';
 
-  // ── 注入 Personal Context ──
+function buildMessages(frame, text, history, personalContext, chatPrompt, recentFrames, observationContext) {
+  const systemParts = [chatPrompt && chatPrompt.trim()
+    ? chatPrompt.trim()
+    : DEFAULT_CHAT_PROMPT];
+
   if (personalContext) {
     const ctxPrompt = buildPersonalContextPrompt(personalContext);
     if (ctxPrompt) systemParts.push(ctxPrompt);
@@ -753,12 +752,34 @@ function buildMessages(frame, text, history, personalContext) {
     }
   }
 
-  // 当前轮（总是带帧）
+  // 最近 N 帧
+  if (recentFrames?.length) {
+    for (let i = 0; i < recentFrames.length; i++) {
+      messages.push({
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: recentFrames[i] } },
+          { type: 'text', text: `[历史帧 ${i+1}/${recentFrames.length}]` },
+        ],
+      });
+    }
+  }
+
+  // 构建引导文字：明确要求 LLM 利用历史帧
+  let note = '';
+  if (recentFrames?.length) {
+    note = `以上是最近${recentFrames.length}帧历史画面（按时间从旧到新排列），当前帧在最下方。请对比这些帧，描述画面中人物的具体变化（动作、物品移动等），不要只描述当前帧。如果画面无明显变化，简要回答即可。`;
+  }
+  if (observationContext?.length) {
+    note += '\n[AI之前的观察记录]\n' + observationContext.map(o => `- ${o.text}`).join('\n');
+  }
+
+  // 当前轮
   messages.push({
     role: 'user',
     content: [
       { type: 'image_url', image_url: { url: frame } },
-      { type: 'text', text },
+      { type: 'text', text: note ? note + '\n' + text : text },
     ],
   });
 
