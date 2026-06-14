@@ -125,7 +125,7 @@ export async function chatNormal(audioBase64, frame, apiHistory) {
 }
 
 // ── 监测流（SSE） ──
-export async function monitorStream({ frame, prevFrame, observationContext, history, personalContext }) {
+export async function monitorStream({ frame, prevFrame, observationContext, history, personalContext, model, monitorPrompt, maxTokens, temperature }) {
   const resp = await fetch('/api/monitor', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -135,7 +135,10 @@ export async function monitorStream({ frame, prevFrame, observationContext, hist
       observationContext: observationContext || [],
       history,
       personalContext: personalContext || '',
-      action: 'observe',
+      monitorPrompt: monitorPrompt || '',
+      maxTokens: maxTokens || 100,
+      temperature: temperature != null ? temperature : 0.3,
+      model: model || settings.model,
       llm_provider: settings.llmProvider,
       llm_api_key: settings.llmApiKey,
       llm_base_url: settings.llmBaseUrl || undefined,
