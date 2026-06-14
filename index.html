@@ -92,6 +92,46 @@
           <textarea id="mem_prompt" rows="6" placeholder="例如：&#10;我是张三，清华大一学生，智能测控专业。&#10;请用简洁的语言回答，一句话即可，口语化。&#10;我经常用这个助手看电子元件和电路板。" class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white text-sm resize-y"></textarea>
         </div>
         <button id="saveMemory" class="w-full py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs transition-colors">保存记忆</button>
+
+        <!-- 监测设置 -->
+        <div class="bg-gray-800/50 rounded-lg p-3 space-y-2">
+          <p class="text-gray-500 text-xs font-medium">🔴 监测设置</p>
+
+          <div class="flex items-center justify-between">
+            <span class="text-gray-400 text-xs">帧间隔</span>
+            <div class="flex items-center gap-2">
+              <input type="range" id="settingMonInterval" min="1000" max="5000" step="500" class="w-16 h-1 accent-red-500" />
+              <span id="monIntervalLabel" class="text-gray-300 w-10 text-right text-xs">2s</span>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between">
+            <span class="text-gray-400 text-xs">变化灵敏度</span>
+            <div class="flex items-center gap-2">
+              <input type="range" id="settingMonThreshold" min="1" max="10" step="1" class="w-16 h-1 accent-red-500" />
+              <span id="monThresholdLabel" class="text-gray-300 w-10 text-right text-xs">3%</span>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between">
+            <span class="text-gray-400 text-xs">TTS 冷却</span>
+            <div class="flex items-center gap-2">
+              <input type="range" id="settingMonCooldown" min="1000" max="10000" step="1000" class="w-16 h-1 accent-red-500" />
+              <span id="monCooldownLabel" class="text-gray-300 w-10 text-right text-xs">5s</span>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between">
+            <span class="text-gray-400 text-xs">监测 max_tokens</span>
+            <div class="flex items-center gap-2">
+              <input type="range" id="settingMonMaxTokens" min="50" max="300" step="25" class="w-16 h-1 accent-red-500" />
+              <span id="monMaxTokensLabel" class="text-gray-300 w-10 text-right text-xs">100</span>
+            </div>
+          </div>
+
+          <p class="text-gray-600 text-xs mt-1">自定义监测 Prompt（空=默认）</p>
+          <textarea id="settingMonPrompt" rows="3" placeholder="空则使用内置监测 Prompt" class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white text-sm resize-y"></textarea>
+        </div>
       </div>
     </div>
   </div>
