@@ -25,6 +25,7 @@ function buildBody(audioBase64, frame, apiHistory, extra) {
     chatPrompt: settings.chatPrompt || undefined,
     maxTokens: settings.chatMaxTokens,
     temperature: settings.chatTemperature,
+    historyMax: settings.historyMax,
   };
 }
 
