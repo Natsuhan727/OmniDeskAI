@@ -97,105 +97,6 @@ function playAudio(audioBase64) {
   currentAudio.play().catch(() => { currentAudio = null; resetToIdle(); });
 }
 
-// ── 实时对话控制 ──
-function startConversation() {
-  if (!stream) return;
-  const audioTrack = stream.getAudioTracks()[0];
-  if (!audioTrack) { showErrorBubble('未检测到麦克风'); return; }
-
-  monitor = createMonitor({
-    captureFrame() {
-      ctx.drawImage(video, 0, 0, 640, 480);
-      return canvas.toDataURL('image/jpeg', settings.frameQuality);
-    },
-    config: {
-      vadThreshold: settings.vadThreshold,
-      vadSilence: settings.vadSilence,
-      interval: settings.monitorInterval,
-      changeThreshold: settings.monitorThreshold,
-    },
-    onSpeechStart() {
-      audioChunks = [];
-      const audioStream = new MediaStream([audioTrack]);
-      try { mediaRecorder = new MediaRecorder(audioStream, { mimeType: 'audio/webm' }); }
-      catch (e) { mediaRecorder = new MediaRecorder(audioStream); }
-      mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
-      mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
-        if (audioBlob.size < 1000) { updateConverseUI(false); return; }
-        let audioBase64;
-        try { const r = await webmToPcmBase64(audioBlob); audioBase64 = r.base64; }
-        catch (e) { console.error('[converse] audio convert failed:', e.message); updateConverseUI(false); return; }
-
-        // 附带画面（帧数 + 上下文）
-        const n = settings.converseFrameCount;
-        const ctxN = settings.monitorContextMax;
-        const recentFrames = n > 0 && monitor ? monitor.getRecentFrames(n) : [];
-        const obsCtx = ctxN > 0 && monitor ? monitor.getObservationContext().slice(0, ctxN) : [];
-        console.log('[converse] extra frames:', n, 'ctx:', ctxN, 'rf:', recentFrames.length, 'oc:', obsCtx.length);
-        ctx.drawImage(video, 0, 0, 640, 480);
-        const currentFrame = canvas.toDataURL('image/jpeg', settings.frameQuality);
-
-        let extra = null;
-        if (recentFrames.length || obsCtx.length) {
-          extra = { recentFrames, observationContext: obsCtx };
-        }
-        await sendToAI(audioBase64, currentFrame, extra);
-        // 恢复 VAD 监听
-        if (monitor && monitor.isConversing()) {
-          monitor.resumeAfterSend();
-          updateConverseUI(false);
-        }
-      };
-      mediaRecorder.start();
-      updateConverseUI(true);
-    },
-    onSpeechEnd() {
-      if (mediaRecorder && mediaRecorder.state === 'recording') {
-        try { mediaRecorder.stop(); } catch (e) {}
-      }
-    },
-  });
-
-  console.log('[converse] starting, audioTrack:', audioTrack.label, 'readyState:', audioTrack.readyState);
-  if (!monitor.startConversation(new MediaStream([audioTrack]))) {
-    showErrorBubble('VAD 初始化失败');
-    monitor = null;
-    return;
-  }
-  console.log('[converse] VAD started, listening...');
-  console.log('[converse] observe setting:', settings.converseObserve);
-  if (settings.converseObserve) {
-    monitor.enableSilentObserve();
-  }
-  updateConverseUI(false);
-}
-
-function stopConversation() {
-  if (monitor) {
-    if (monitor.isSilentObserving()) monitor.disableSilentObserve();
-    monitor.stopConversation();
-    monitor = null;
-  }
-  updateConverseUI(false);
-}
-
-function updateConverseUI(isRecording) {
-  const btn = document.getElementById('converseToggle');
-  if (!btn) return;
-  if (!monitor || !monitor.isConversing()) {
-    btn.textContent = '🟢 开启实时对话';
-    btn.className = 'w-full py-2 rounded-lg text-sm font-medium select-none bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors';
-    setButtonState('idle');
-  } else if (isRecording) {
-    btn.textContent = '🔴 对话中...';
-    btn.className = 'w-full py-2 rounded-lg text-sm font-medium select-none bg-green-600/30 hover:bg-green-600/50 text-green-300 border border-green-600/30 transition-colors';
-  } else {
-    btn.textContent = '🟢 聆听中...';
-    btn.className = 'w-full py-2 rounded-lg text-sm font-medium select-none bg-green-600/30 hover:bg-green-600/50 text-green-300 border border-green-600/30 transition-colors';
-  }
-}
-
 // ── 监测控制 ──
 function startMonitor() {
   monitor = createMonitor({
@@ -277,8 +178,6 @@ function stopMonitor() {
 function updateMonitorUI(isSending) {
   const btn = document.getElementById('monitorToggle');
   if (!btn) return;
-  if (monitor && monitor.isConversing()) { btn.disabled = true; return; }
-  btn.disabled = false;
   const s = monitor ? monitor.getState() : null;
   if (!s || s.mode === 'idle') {
     btn.textContent = '▶ 开启实时监测';
@@ -295,15 +194,15 @@ function updateMonitorUI(isSending) {
 }
 
 // ── 发送（流式优先，失败降级非流式） ──
-async function sendToAI(audioBase64, frame, extra) {
+async function sendToAI(audioBase64, frame) {
   setButtonState('sending');
   const t0 = Date.now();
   const apiHistory = buildApiHistory();
-  console.log('[api] audio:', audioBase64.length, 'chars, frame:', frame.length, 'chars, history:', apiHistory.length, 'msgs', extra ? ('extra: ' + JSON.stringify({rf: extra.recentFrames?.length, oc: extra.observationContext?.length})) : '');
+  console.log('[api] audio:', audioBase64.length, 'chars, frame:', frame.length, 'chars, history:', apiHistory.length, 'msgs');
   console.log('[api] params: model=' + settings.model + ' maxTokens=' + settings.chatMaxTokens + ' temperature=' + settings.chatTemperature + (settings.chatPrompt ? ' chatPrompt=自定义' : ' chatPrompt=默认'));
 
   try {
-    const { userText, text, audio } = await streamChat(audioBase64, frame, apiHistory, extra);
+    const { userText, text, audio } = await streamChat(audioBase64, frame, apiHistory);
     console.log('[api] stream elapsed:', Date.now() - t0, 'ms, text:', text?.slice(0, 80));
     addToHistory('user', userText, frame);
     addToHistory('assistant', text);
@@ -316,7 +215,7 @@ async function sendToAI(audioBase64, frame, extra) {
     const placeholder = appendBubble('assistant', '⏳ AI 正在组织语言...');
     placeholder.querySelector('p').classList.add('animate-pulse');
     try {
-      const data = await chatNormal(audioBase64, frame, apiHistory, extra);
+      const data = await chatNormal(audioBase64, frame, apiHistory);
       console.log('[api] fallback elapsed:', Date.now() - t0, 'ms, text:', data.text?.slice(0, 80));
       placeholder.remove();
       if (data.text && data.userText) {
@@ -349,9 +248,6 @@ async function sendToAI(audioBase64, frame, extra) {
 // ── 按下（含打断逻辑） ──
 function onButtonDown(e) {
   e.preventDefault();
-
-  // 对话模式中 → 禁用按住说话
-  if (monitor && monitor.isConversing()) return;
 
   // 监测运行中 → 暂停
   if (monitor && monitor.getState().mode !== 'idle') {
@@ -466,23 +362,10 @@ async function init() {
   const monitorBtn = document.getElementById('monitorToggle');
   if (monitorBtn) {
     monitorBtn.addEventListener('click', () => {
-      if (monitor && monitor.isConversing()) return; // 对话中不干预
       if (monitor && monitor.getState().mode !== 'idle') {
         stopMonitor();
       } else {
         startMonitor();
-      }
-    });
-  }
-
-  const converseBtn = document.getElementById('converseToggle');
-  if (converseBtn) {
-    converseBtn.addEventListener('click', () => {
-      if (monitor && monitor.isConversing()) {
-        stopConversation();
-      } else {
-        stopMonitor();
-        startConversation();
       }
     });
   }

@@ -50,18 +50,6 @@ export const settings = {
   get monitorPrompt() { return localStorage.getItem('mon_prompt') || ''; },
   set monitorPrompt(v) { localStorage.setItem('mon_prompt', String(v)); },
 
-  // ── VAD 设置 ──
-  get vadThreshold() { return parseFloat(localStorage.getItem('vad_threshold') || '0.02'); },
-  set vadThreshold(v) { localStorage.setItem('vad_threshold', String(v)); },
-  get vadSilence() { return parseInt(localStorage.getItem('vad_silence') || '1500'); },
-  set vadSilence(v) { localStorage.setItem('vad_silence', String(v)); },
-  get converseObserve() { return localStorage.getItem('converse_observe') !== 'false'; },
-  set converseObserve(v) { localStorage.setItem('converse_observe', String(v)); },
-  get converseFrameCount() { return parseInt(localStorage.getItem('converse_frame_count') || '3'); },
-  set converseFrameCount(v) { localStorage.setItem('converse_frame_count', String(v)); },
-  get monitorContextMax() { return parseInt(localStorage.getItem('mon_ctx_max') || '3'); },
-  set monitorContextMax(v) { localStorage.setItem('mon_ctx_max', String(v)); },
-
   // ── 对话设置 ──
   get chatPrompt() { return localStorage.getItem('chat_prompt') || ''; },
   set chatPrompt(v) { localStorage.setItem('chat_prompt', String(v)); },
@@ -384,51 +372,6 @@ function initMonitorSettings() {
     promptEl.placeholder = MONITOR_DEFAULT_PROMPT;
     promptEl.addEventListener('input', () => {
       settings.monitorPrompt = promptEl.value;
-    });
-  }
-
-  // 观察开关
-  const observeEl = document.getElementById('settingConverseObserve');
-  if (observeEl) {
-    observeEl.checked = settings.converseObserve;
-    observeEl.addEventListener('change', () => { settings.converseObserve = observeEl.checked; });
-  }
-
-  // VAD 设置
-  const vadThresholdEl = document.getElementById('settingVadThreshold');
-  const vadSilenceEl = document.getElementById('settingVadSilence');
-  if (vadThresholdEl) {
-    vadThresholdEl.value = Math.round(settings.vadThreshold * 100);
-    document.getElementById('vadThresholdLabel').textContent = settings.vadThreshold.toFixed(2);
-    vadThresholdEl.addEventListener('input', () => {
-      settings.vadThreshold = parseInt(vadThresholdEl.value) / 100;
-      document.getElementById('vadThresholdLabel').textContent = settings.vadThreshold.toFixed(2);
-    });
-  }
-  if (vadSilenceEl) {
-    vadSilenceEl.value = settings.vadSilence;
-    document.getElementById('vadSilenceLabel').textContent = (settings.vadSilence / 1000).toFixed(1) + 's';
-    vadSilenceEl.addEventListener('input', () => {
-      settings.vadSilence = parseInt(vadSilenceEl.value);
-      document.getElementById('vadSilenceLabel').textContent = (parseInt(vadSilenceEl.value) / 1000).toFixed(1) + 's';
-    });
-  }
-  const frameCountEl = document.getElementById('settingConverseFrameCount');
-  if (frameCountEl) {
-    frameCountEl.value = settings.converseFrameCount;
-    document.getElementById('converseFrameCountLabel').textContent = settings.converseFrameCount;
-    frameCountEl.addEventListener('input', () => {
-      settings.converseFrameCount = parseInt(frameCountEl.value);
-      document.getElementById('converseFrameCountLabel').textContent = parseInt(frameCountEl.value);
-    });
-  }
-  const ctxMaxEl = document.getElementById('settingMonitorCtxMax');
-  if (ctxMaxEl) {
-    ctxMaxEl.value = settings.monitorContextMax;
-    document.getElementById('monitorCtxMaxLabel').textContent = settings.monitorContextMax;
-    ctxMaxEl.addEventListener('input', () => {
-      settings.monitorContextMax = parseInt(ctxMaxEl.value);
-      document.getElementById('monitorCtxMaxLabel').textContent = parseInt(ctxMaxEl.value);
     });
   }
 
