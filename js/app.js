@@ -199,6 +199,7 @@ async function sendToAI(audioBase64, frame) {
   const t0 = Date.now();
   const apiHistory = buildApiHistory();
   console.log('[api] audio:', audioBase64.length, 'chars, frame:', frame.length, 'chars, history:', apiHistory.length, 'msgs');
+  console.log('[api] params: model=' + settings.model + ' maxTokens=' + settings.chatMaxTokens + ' temperature=' + settings.chatTemperature + (settings.chatPrompt ? ' chatPrompt=自定义' : ' chatPrompt=默认'));
 
   try {
     const { userText, text, audio } = await streamChat(audioBase64, frame, apiHistory);

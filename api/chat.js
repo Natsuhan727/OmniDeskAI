@@ -77,7 +77,7 @@ export default async function handler(req) {
 
     // ── 视觉对话 ──
     const tLLM = Date.now();
-    const llmResult = await chatWithVision(frame, userText, conversationHistory, llmCfg, body.personalContext);
+    const llmResult = await chatWithVision(frame, userText, conversationHistory, llmCfg, body.personalContext, body.model, body.maxTokens, body.temperature, body.chatPrompt);
 
     if (llmResult.error) {
       return json(llmResult.status, { text: null, audio: null, error: llmResult.error });
@@ -155,8 +155,8 @@ async function handleStream(req) {
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model,
-        messages: buildMessages(frame, userText, history, body.personalContext),
-        max_tokens: 300, temperature: 0.7, stream: true,
+        messages: buildMessages(frame, userText, history, body.personalContext, body.chatPrompt),
+        max_tokens: body.maxTokens || 300, temperature: body.temperature ?? 0.7, stream: true,
       }),
       signal: AbortSignal.timeout(25_000),
     });
@@ -376,6 +376,7 @@ function handleConfig() {
       LLM_BASE_URL: !!(process.env.LLM_BASE_URL),
     },
     monitorPromptDefault: MONITOR_DEFAULT_PROMPT,
+    chatPromptDefault: DEFAULT_CHAT_PROMPT,
   });
 }
 
@@ -667,23 +668,23 @@ const llmProviders = {
   dashscope: llmDashScope,
 };
 
-async function chatWithVision(frame, text, history = [], { provider, apiKey, baseUrl }, personalContext) {
+async function chatWithVision(frame, text, history = [], { provider, apiKey, baseUrl }, personalContext, model, maxTokens, temperature, chatPrompt) {
   const fn = llmProviders[provider];
   if (!fn) return { text: null, error: `未知 LLM 供应商: ${provider}`, status: 500 };
-  return fn(frame, text, history, { apiKey, baseUrl }, personalContext);
+  return fn(frame, text, history, { apiKey, baseUrl }, personalContext, model, maxTokens, temperature, chatPrompt);
 }
 
-async function llmDashScope(frame, text, history = [], { apiKey, baseUrl }, personalContext) {
+async function llmDashScope(frame, text, history = [], { apiKey, baseUrl }, personalContext, model, maxTokens, temperature, chatPrompt) {
   if (!apiKey) {
     return { text: null, error: '服务未配置 LLM Key', status: 500 };
   }
 
-  const model = process.env.LLM_MODEL || 'qwen-vl-plus';
+  const llmModel = model || process.env.LLM_MODEL || 'qwen-vl-plus';
 
   const reqBody = JSON.stringify({
-    model,
-    messages: buildMessages(frame, text, history, personalContext),
-    max_tokens: 300, temperature: 0.7,
+    model: llmModel,
+    messages: buildMessages(frame, text, history, personalContext, chatPrompt),
+    max_tokens: maxTokens || 300, temperature: temperature ?? 0.7,
   });
 
   // ── 发送（超时重试 1 次） ──
@@ -723,13 +724,12 @@ async function llmDashScope(frame, text, history = [], { apiKey, baseUrl }, pers
 }
 
 // ── 构造 LLM messages（含视觉记忆） ──
-function buildMessages(frame, text, history, personalContext) {
-  const systemParts = [
-    '你是视觉对话助手。用户给你一张摄像头画面和一个问题。',
-    '结合画面简洁回答。150字以内，口语化，中文。',
-    '不编造不存在的内容。不确定时诚实说明。',
-    '不需要"我看到了..."开场白，直接回答。',
-  ];
+const DEFAULT_CHAT_PROMPT = '你是视觉对话助手。用户给你一张摄像头画面和一个问题。结合画面简洁回答。150字以内，口语化，中文。不编造不存在的内容。不确定时诚实说明。不需要"我看到了..."开场白，直接回答。';
+
+function buildMessages(frame, text, history, personalContext, chatPrompt) {
+  const systemParts = [chatPrompt && chatPrompt.trim()
+    ? chatPrompt.trim()
+    : DEFAULT_CHAT_PROMPT];
 
   // ── 注入 Personal Context ──
   if (personalContext) {
