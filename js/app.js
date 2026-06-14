@@ -52,8 +52,6 @@ function resetToIdle() {
 }
 
 // ── 历史管理 ──
-const MAX_HISTORY = 12; // 6 轮
-
 function addToHistory(role, text, frame) {
   conversationHistory.push({
     role,
@@ -61,7 +59,7 @@ function addToHistory(role, text, frame) {
     ...(frame ? { frame } : {}),
     timestamp: Date.now(),
   });
-  while (conversationHistory.length > MAX_HISTORY) conversationHistory.shift();
+  while (conversationHistory.length > settings.historyMax) conversationHistory.shift();
 }
 
 function buildApiHistory() {

@@ -859,9 +859,9 @@ function parseAndValidate(body) {
   }
 
   const history = Array.isArray(body.history) ? body.history : [];
-  // 防御性截断（最多 12 条 = 6 轮）
-  if (history.length > 12) {
-    history.splice(0, history.length - 12);
+  const maxHistory = body.historyMax || 12;
+  if (history.length > maxHistory) {
+    history.splice(0, history.length - maxHistory);
   }
 
   return { valid: true, data: { audio: body.audio, frame: body.frame, history } };
