@@ -32,6 +32,24 @@ export const settings = {
   get frameQuality() { return parseFloat(localStorage.getItem('quality') || '0.6'); },
   set frameQuality(v) { localStorage.setItem('quality', String(v)); },
 
+  // ── 监测设置 ──
+  get monitorInterval() { return parseInt(localStorage.getItem('mon_interval') || '2000'); },
+  set monitorInterval(v) { localStorage.setItem('mon_interval', String(v)); },
+  get monitorThreshold() { return parseFloat(localStorage.getItem('mon_threshold') || '0.03'); },
+  set monitorThreshold(v) { localStorage.setItem('mon_threshold', String(v)); },
+  get monitorCooldown() { return parseInt(localStorage.getItem('mon_cooldown') || '5000'); },
+  set monitorCooldown(v) { localStorage.setItem('mon_cooldown', String(v)); },
+  get monitorBreakThreshold() { return parseFloat(localStorage.getItem('mon_break') || '0.10'); },
+  set monitorBreakThreshold(v) { localStorage.setItem('mon_break', String(v)); },
+  get monitorSimilarity() { return parseFloat(localStorage.getItem('mon_similarity') || '0.70'); },
+  set monitorSimilarity(v) { localStorage.setItem('mon_similarity', String(v)); },
+  get monitorMaxTokens() { return parseInt(localStorage.getItem('mon_max_tokens') || '100'); },
+  set monitorMaxTokens(v) { localStorage.setItem('mon_max_tokens', String(v)); },
+  get monitorTemperature() { return parseFloat(localStorage.getItem('mon_temperature') || '0.3'); },
+  set monitorTemperature(v) { localStorage.setItem('mon_temperature', String(v)); },
+  get monitorPrompt() { return localStorage.getItem('mon_prompt') || ''; },
+  set monitorPrompt(v) { localStorage.setItem('mon_prompt', String(v)); },
+
   get hasConversed() { return localStorage.getItem('has_conversed') === 'true'; },
   set hasConversed(v) { localStorage.setItem('has_conversed', String(v)); },
 };
@@ -39,6 +57,9 @@ export const settings = {
 // ── 运行时状态 ──
 let providerMeta = { asr: [], llm: [], tts: [] };
 let envConfigured = {};
+
+// 前端内置默认 Prompt（与 api/chat.js MONITOR_DEFAULT_PROMPT 同步）
+const MONITOR_DEFAULT_PROMPT = '你是实时视觉监测助手。用户开启了摄像头，你会收到画面。你的任务是简短描述摄像头画面中的内容。20字以内，口语化，中文。不要编造不存在的内容。直接描述你看到的，不需要"我看到了..."开场白。';
 
 // ── 工具：field → settings 属性名 ──
 function fieldToProp(kind, field) {
@@ -88,6 +109,7 @@ export async function initSettingsPanel() {
   renderAllSections();
   bindStaticControls();
   initMemoryTab();
+  initMonitorSettings();
 
   // ── 标签页切换 ──
   const tabs = document.querySelectorAll('.settings-tab');
@@ -290,6 +312,55 @@ function showToast(msg) {
 }
 
 function escapeAttr(s) { return String(s || '').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+
+// ── 监测设置 ──
+function initMonitorSettings() {
+  const intervalEl = document.getElementById('settingMonInterval');
+  const thresholdEl = document.getElementById('settingMonThreshold');
+  const cooldownEl = document.getElementById('settingMonCooldown');
+  const maxTokensEl = document.getElementById('settingMonMaxTokens');
+  const promptEl = document.getElementById('settingMonPrompt');
+
+  if (intervalEl) {
+    intervalEl.value = settings.monitorInterval;
+    document.getElementById('monIntervalLabel').textContent = (settings.monitorInterval / 1000) + 's';
+    intervalEl.addEventListener('input', () => {
+      settings.monitorInterval = parseInt(intervalEl.value);
+      document.getElementById('monIntervalLabel').textContent = (parseInt(intervalEl.value) / 1000) + 's';
+    });
+  }
+  if (thresholdEl) {
+    thresholdEl.value = Math.round(settings.monitorThreshold * 100);
+    document.getElementById('monThresholdLabel').textContent = Math.round(settings.monitorThreshold * 100) + '%';
+    thresholdEl.addEventListener('input', () => {
+      settings.monitorThreshold = parseInt(thresholdEl.value) / 100;
+      document.getElementById('monThresholdLabel').textContent = parseInt(thresholdEl.value) + '%';
+    });
+  }
+  if (cooldownEl) {
+    cooldownEl.value = settings.monitorCooldown;
+    document.getElementById('monCooldownLabel').textContent = (settings.monitorCooldown / 1000) + 's';
+    cooldownEl.addEventListener('input', () => {
+      settings.monitorCooldown = parseInt(cooldownEl.value);
+      document.getElementById('monCooldownLabel').textContent = (parseInt(cooldownEl.value) / 1000) + 's';
+    });
+  }
+  if (maxTokensEl) {
+    maxTokensEl.value = settings.monitorMaxTokens;
+    document.getElementById('monMaxTokensLabel').textContent = settings.monitorMaxTokens;
+    maxTokensEl.addEventListener('input', () => {
+      settings.monitorMaxTokens = parseInt(maxTokensEl.value);
+      document.getElementById('monMaxTokensLabel').textContent = parseInt(maxTokensEl.value);
+    });
+  }
+  if (promptEl) {
+    promptEl.value = settings.monitorPrompt;
+    promptEl.placeholder = MONITOR_DEFAULT_PROMPT;
+    promptEl.addEventListener('input', () => {
+      settings.monitorPrompt = promptEl.value;
+    });
+  }
+}
 
 // ── 记忆标签页 ──
 function initMemoryTab() {
