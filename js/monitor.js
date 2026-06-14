@@ -3,7 +3,10 @@
 // 依赖注入模式，不直接依赖任何模块
 
 export function createMonitor(deps) {
-  const { captureFrame, getConversationHistory, onObservation, onSpeaking, onError } = deps;
+  const { captureFrame, getConversationHistory, onObservation, onSpeaking, onError, config } = deps;
+
+  // ── 默认值 ──
+  const cfg = config || {};
 
   // ── 状态 ──
   const state = {
@@ -19,8 +22,8 @@ export function createMonitor(deps) {
     active: false,
     until: 0,               // 冷却结束时间戳
     lastText: '',           // 上次播报文字
-    duration: 5000,         // 冷却时长 ms
-    breakThreshold: 0.10,   // 画面差异 > 10% 打破冷却
+    get duration() { return cfg.cooldownDuration || 5000; },
+    get breakThreshold() { return cfg.breakThreshold || 0.10; },
 
     isActive() {
       return this.active && Date.now() < this.until;
@@ -53,7 +56,7 @@ export function createMonitor(deps) {
 
   // ── 变化检测 ──
   const changeDetector = {
-    threshold: 0.03,
+    get threshold() { return cfg.changeThreshold || 0.03; },
 
     async isSimilar(frame1, frame2) {
       if (!frame1 || !frame2) return false;
@@ -90,7 +93,7 @@ export function createMonitor(deps) {
   };
 
   // ── 帧调度器 ──
-  let interval = 2000;
+  let interval = cfg.interval || 2000;
 
   async function tick() {
     if (state.mode !== 'observing') return;
@@ -190,7 +193,7 @@ export function createMonitor(deps) {
     // 内容去重：判断两段文字相似度是否 > 70%
     isTextSimilar(text1, text2) {
       if (!text1 || !text2) return false;
-      return textSimilarity(text1, text2) > 0.7;
+      return textSimilarity(text1, text2) > (cfg.similarityThreshold || 0.70);
     },
 
     getState() { return { ...state }; },

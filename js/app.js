@@ -100,6 +100,13 @@ function playAudio(audioBase64) {
 // ── 监测控制 ──
 function startMonitor() {
   monitor = createMonitor({
+    config: {
+      interval: settings.monitorInterval,
+      changeThreshold: settings.monitorThreshold,
+      cooldownDuration: settings.monitorCooldown,
+      breakThreshold: settings.monitorBreakThreshold,
+      similarityThreshold: settings.monitorSimilarity,
+    },
     captureFrame() {
       ctx.drawImage(video, 0, 0, 640, 480);
       return canvas.toDataURL('image/jpeg', settings.frameQuality);
@@ -117,6 +124,10 @@ function startMonitor() {
           observationContext,
           history,
           personalContext: personalContext.get(),
+          model: settings.model,
+          monitorPrompt: settings.monitorPrompt,
+          maxTokens: settings.monitorMaxTokens,
+          temperature: settings.monitorTemperature,
         });
       } catch (err) {
         console.error('[monitor] request failed:', err.message);
@@ -175,8 +186,9 @@ function updateMonitorUI(isSending) {
     btn.textContent = '⏳ AI 正在观察...';
     btn.className = 'w-full py-2 rounded-lg text-sm font-medium select-none bg-gray-600 text-gray-300 cursor-not-allowed';
   } else {
+    const sec = Math.round(settings.monitorInterval / 1000);
     const skipped = s.suppressedCount > 0 ? ` · 已跳过 ${s.suppressedCount} 帧` : '';
-    btn.textContent = `🔴 监测中 · 每 2s${skipped}`;
+    btn.textContent = `🔴 监测中 · 每 ${sec}s${skipped}`;
     btn.className = 'w-full py-2 rounded-lg text-sm font-medium select-none bg-red-600/30 hover:bg-red-600/50 text-red-300 border border-red-600/30 transition-colors';
   }
 }
