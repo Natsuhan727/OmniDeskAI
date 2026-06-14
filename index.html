@@ -203,6 +203,17 @@
             </div>
           </div>
         </div>
+        <div class="bg-gray-800/50 rounded-lg p-3 space-y-2">
+          <p class="text-gray-500 text-xs font-medium">📝 对话历史</p>
+          <div class="flex items-center justify-between">
+            <span class="text-gray-400 text-xs">最大轮数</span>
+            <div class="flex items-center gap-2">
+              <input type="range" id="settingHistoryMax" min="2" max="50" step="2" class="w-16 h-1 accent-blue-500" />
+              <span id="historyMaxLabel" class="text-gray-300 w-8 text-right text-xs">12</span>
+            </div>
+          </div>
+          <button id="clearHistory" class="w-full py-1.5 rounded bg-red-600/30 hover:bg-red-600/50 text-red-300 text-xs transition-colors">清除对话历史</button>
+        </div>
         <button id="saveChatSettings" class="w-full py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs transition-colors">保存对话设置</button>
       </div>
     </div>
