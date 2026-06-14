@@ -223,7 +223,7 @@ async function handleMonitor(req) {
 
   if (!llmCfg.apiKey) return json(500, { error: '未配置 LLM Key' });
 
-  const messages = buildMonitorMessages(frame, prevFrame, observationContext, history, personalContext, action);
+  const messages = buildMonitorMessages(frame, prevFrame, observationContext, history, personalContext, body.monitorPrompt);
 
   let streamResp;
   try {
@@ -233,8 +233,8 @@ async function handleMonitor(req) {
       body: JSON.stringify({
         model: body.model || process.env.LLM_MODEL || 'qwen-vl-plus',
         messages,
-        max_tokens: 100,
-        temperature: 0.3,
+        max_tokens: body.maxTokens || 100,
+        temperature: body.temperature != null ? body.temperature : 0.3,
         stream: true,
       }),
       signal: AbortSignal.timeout(25_000),
@@ -279,12 +279,10 @@ async function handleMonitor(req) {
 }
 
 // ── 监测消息构建 ──
-function buildMonitorMessages(frame, prevFrame, observationContext, history, personalContext, action) {
-  const systemParts = [
-    '你是实时视觉监测助手。用户开启了摄像头，你会收到画面。',
-    '你的任务是简短描述摄像头画面中的内容。20字以内，口语化，中文。',
-    '不要编造不存在的内容。直接描述你看到的，不需要"我看到了..."开场白。',
-  ];
+function buildMonitorMessages(frame, prevFrame, observationContext, history, personalContext, customPrompt) {
+  const systemParts = customPrompt && customPrompt.trim()
+    ? [customPrompt.trim()]
+    : [MONITOR_DEFAULT_PROMPT];
 
   // 注入观察上下文（"你的记忆"）
   if (observationContext?.length) {
@@ -363,6 +361,12 @@ async function handleTTS(req) {
 //  通用端点 — GET /api/config, POST /api/ping
 // ═══════════════════════════════════════════════
 
+const MONITOR_DEFAULT_PROMPT = [
+  '你是实时视觉监测助手。用户开启了摄像头，你会收到画面。',
+  '你的任务是简短描述摄像头画面中的内容。20字以内，口语化，中文。',
+  '不要编造不存在的内容。直接描述你看到的，不需要"我看到了..."开场白。',
+].join(' ');
+
 function handleConfig() {
   return json(200, {
     env: {
@@ -371,6 +375,7 @@ function handleConfig() {
       LLM_API_KEY: !!(process.env.LLM_API_KEY),
       LLM_BASE_URL: !!(process.env.LLM_BASE_URL),
     },
+    monitorPromptDefault: MONITOR_DEFAULT_PROMPT,
   });
 }
 
