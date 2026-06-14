@@ -58,6 +58,9 @@ export const settings = {
   get chatTemperature() { return parseFloat(localStorage.getItem('chat_temperature') || '0.7'); },
   set chatTemperature(v) { localStorage.setItem('chat_temperature', String(v)); },
 
+  get historyMax() { return parseInt(localStorage.getItem('history_max') || '12'); },
+  set historyMax(v) { localStorage.setItem('history_max', String(v)); },
+
   get hasConversed() { return localStorage.getItem('has_conversed') === 'true'; },
   set hasConversed(v) { localStorage.setItem('has_conversed', String(v)); },
 };
@@ -421,6 +424,26 @@ function initChatTab() {
     tempEl.addEventListener('input', () => {
       settings.chatTemperature = parseFloat(tempEl.value);
       document.getElementById('chatTemperatureLabel').textContent = parseFloat(tempEl.value);
+    });
+  }
+
+  // 对话历史
+  const historyMaxEl = document.getElementById('settingHistoryMax');
+  if (historyMaxEl) {
+    historyMaxEl.value = settings.historyMax;
+    document.getElementById('historyMaxLabel').textContent = settings.historyMax;
+    historyMaxEl.addEventListener('input', () => {
+      settings.historyMax = parseInt(historyMaxEl.value);
+      document.getElementById('historyMaxLabel').textContent = parseInt(historyMaxEl.value);
+    });
+  }
+  const clearBtn = document.getElementById('clearHistory');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      if (confirm('确定要清除所有对话历史吗？此操作不可撤销。')) {
+        localStorage.removeItem('omni_session');
+        location.reload();
+      }
     });
   }
 
