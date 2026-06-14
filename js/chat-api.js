@@ -6,11 +6,13 @@ import { appendBubble, updateBubbleText } from './ui.js';
 import { personalContext } from './personal-context.js';
 
 // 构建通用请求体（含 Key + Provider）
-function buildBody(audioBase64, frame, apiHistory) {
+function buildBody(audioBase64, frame, apiHistory, extra) {
   return {
     audio: audioBase64,
     frame,
     history: apiHistory,
+    recentFrames: extra?.recentFrames || null,
+    observationContext: extra?.observationContext || null,
     model: settings.model,
     asr_provider: settings.asrProvider,
     asr_api_key: settings.asrApiKey,
@@ -27,11 +29,11 @@ function buildBody(audioBase64, frame, apiHistory) {
 }
 
 // ── 流式对话（SSE） ──
-export async function streamChat(audioBase64, frame, apiHistory) {
+export async function streamChat(audioBase64, frame, apiHistory, extra) {
   const resp = await fetch('/api/chat/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(buildBody(audioBase64, frame, apiHistory)),
+    body: JSON.stringify(buildBody(audioBase64, frame, apiHistory, extra)),
   });
 
   if (!resp.ok) throw new Error(`Stream HTTP ${resp.status}`);
@@ -116,11 +118,11 @@ export async function streamChat(audioBase64, frame, apiHistory) {
 }
 
 // ── 非流式对话（降级路径） ──
-export async function chatNormal(audioBase64, frame, apiHistory) {
+export async function chatNormal(audioBase64, frame, apiHistory, extra) {
   const resp = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(buildBody(audioBase64, frame, apiHistory)),
+    body: JSON.stringify(buildBody(audioBase64, frame, apiHistory, extra)),
   });
   const data = await resp.json();
   if (!resp.ok || data.error) throw new Error(data.error || '请求失败');
