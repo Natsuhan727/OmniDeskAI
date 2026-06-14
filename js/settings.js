@@ -50,6 +50,14 @@ export const settings = {
   get monitorPrompt() { return localStorage.getItem('mon_prompt') || ''; },
   set monitorPrompt(v) { localStorage.setItem('mon_prompt', String(v)); },
 
+  // ── 对话设置 ──
+  get chatPrompt() { return localStorage.getItem('chat_prompt') || ''; },
+  set chatPrompt(v) { localStorage.setItem('chat_prompt', String(v)); },
+  get chatMaxTokens() { return parseInt(localStorage.getItem('chat_max_tokens') || '300'); },
+  set chatMaxTokens(v) { localStorage.setItem('chat_max_tokens', String(v)); },
+  get chatTemperature() { return parseFloat(localStorage.getItem('chat_temperature') || '0.7'); },
+  set chatTemperature(v) { localStorage.setItem('chat_temperature', String(v)); },
+
   get hasConversed() { return localStorage.getItem('has_conversed') === 'true'; },
   set hasConversed(v) { localStorage.setItem('has_conversed', String(v)); },
 };
@@ -85,10 +93,10 @@ export async function initSettingsPanel() {
   ]);
 
   if (provResp.status === 'fulfilled') {
-    try { providerMeta = await provResp.value.json(); } catch (e) { /* keep default */ }
+    try { providerMeta = await provResp.value.json(); applyProviderDefaults(providerMeta); } catch (e) { /* keep default */ }
   }
   if (cfgResp.status === 'fulfilled') {
-    try { const d = await cfgResp.value.json(); envConfigured = d.env || {}; } catch (e) { /* keep default */ }
+    try { const d = await cfgResp.value.json(); envConfigured = d.env || {}; chatDefaultPrompt = d.chatPromptDefault || ''; } catch (e) { /* keep default */ }
   }
 
   const toggleBtn = document.getElementById('settingsToggle');
@@ -110,22 +118,28 @@ export async function initSettingsPanel() {
   bindStaticControls();
   initMemoryTab();
   initMonitorSettings();
+  initChatTab();
 
-  // ── 标签页切换 ──
+  // ── 标签页切换（3 标签） ──
   const tabs = document.querySelectorAll('.settings-tab');
   const providersTab = document.getElementById('providersTab');
   const memoryTab = document.getElementById('memoryTab');
+  const chatTab = document.getElementById('chatTab');
   tabs.forEach(tab => {
     tab.addEventListener('click', () => {
       const target = tab.dataset.tab;
       tabs.forEach(t => { t.classList.remove('active', 'bg-gray-800', 'text-white', 'border-gray-700/50'); t.classList.add('border-transparent', 'text-gray-500'); });
       tab.classList.add('active', 'bg-gray-800', 'text-white', 'border-gray-700/50');
       tab.classList.remove('border-transparent', 'text-gray-500');
+      providersTab.classList.add('hidden');
+      memoryTab.classList.add('hidden');
+      if (chatTab) chatTab.classList.add('hidden');
       if (target === 'providers') {
         providersTab.classList.remove('hidden');
-        memoryTab.classList.add('hidden');
+      } else if (target === 'chat') {
+        if (chatTab) chatTab.classList.remove('hidden');
+        refreshChatTab();
       } else {
-        providersTab.classList.add('hidden');
         memoryTab.classList.remove('hidden');
         refreshMemoryTab();
       }
@@ -294,10 +308,10 @@ function bindStaticControls() {
     if (settings.llmApiKey || envConfigured.LLM_API_KEY) parts.push(`LLM: ${llmName} ✓`);
     else parts.push(`LLM: 未配置`);
 
-    // 记忆状态
-    const pcText = personalContext.get();
-    if (pcText) parts.push('记忆: 已配置');
-    else parts.push('记忆: 未配置');
+    // 记忆/对话/监测状态
+    if (personalContext.get()) parts.push('记忆: 已配置');
+    if (settings.chatPrompt) parts.push('对话Prompt: 自定义');
+    if (settings.monitorPrompt) parts.push('监测Prompt: 自定义');
 
     showToast(`✓ 设置已保存 — ${parts.join(' | ')}`);
   });
@@ -360,6 +374,80 @@ function initMonitorSettings() {
       settings.monitorPrompt = promptEl.value;
     });
   }
+
+  // 保存按钮
+  const saveBtn = document.getElementById('saveMonSettings');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', () => {
+      const parts = [];
+      parts.push(`帧间隔: ${settings.monitorInterval / 1000}s`);
+      parts.push(`灵敏度: ${Math.round(settings.monitorThreshold * 100)}%`);
+      parts.push(`冷却: ${settings.monitorCooldown / 1000}s`);
+      parts.push(`max_tokens: ${settings.monitorMaxTokens}`);
+      if (settings.monitorPrompt) {
+        parts.push(`Prompt: 自定义`);
+      } else {
+        parts.push('Prompt: 默认');
+      }
+      showToast(`✓ 监测设置已保存 — ${parts.join(' | ')}`);
+    });
+  }
+}
+
+// ── 对话标签页 ──
+let chatDefaultPrompt = '';
+
+function initChatTab() {
+  const promptEl = document.getElementById('settingChatPrompt');
+  const maxTokensEl = document.getElementById('settingChatMaxTokens');
+  const tempEl = document.getElementById('settingChatTemperature');
+
+  if (promptEl) {
+    promptEl.value = settings.chatPrompt;
+    promptEl.placeholder = chatDefaultPrompt || '使用内置默认 Prompt';
+    promptEl.addEventListener('input', () => { settings.chatPrompt = promptEl.value; });
+  }
+  if (maxTokensEl) {
+    maxTokensEl.value = settings.chatMaxTokens;
+    document.getElementById('chatMaxTokensLabel').textContent = settings.chatMaxTokens;
+    maxTokensEl.addEventListener('input', () => {
+      settings.chatMaxTokens = parseInt(maxTokensEl.value);
+      document.getElementById('chatMaxTokensLabel').textContent = parseInt(maxTokensEl.value);
+    });
+  }
+  if (tempEl) {
+    tempEl.value = settings.chatTemperature;
+    document.getElementById('chatTemperatureLabel').textContent = settings.chatTemperature;
+    tempEl.addEventListener('input', () => {
+      settings.chatTemperature = parseFloat(tempEl.value);
+      document.getElementById('chatTemperatureLabel').textContent = parseFloat(tempEl.value);
+    });
+  }
+
+  // 保存按钮
+  const saveBtn = document.getElementById('saveChatSettings');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', () => {
+      const parts = [];
+      parts.push(`max_tokens: ${settings.chatMaxTokens}`);
+      parts.push(`temperature: ${settings.chatTemperature}`);
+      if (settings.chatPrompt) {
+        parts.push(`Prompt: ${settings.chatPrompt.trim().slice(0, 30)}${settings.chatPrompt.trim().length > 30 ? '…' : ''}`);
+      } else {
+        parts.push('Prompt: 默认');
+      }
+      showToast(`✓ 对话设置已保存 — ${parts.join(' | ')}`);
+    });
+  }
+}
+
+function refreshChatTab() {
+  const promptEl = document.getElementById('settingChatPrompt');
+  const maxTokensEl = document.getElementById('settingChatMaxTokens');
+  const tempEl = document.getElementById('settingChatTemperature');
+  if (promptEl) promptEl.value = settings.chatPrompt;
+  if (maxTokensEl) { maxTokensEl.value = settings.chatMaxTokens; document.getElementById('chatMaxTokensLabel').textContent = settings.chatMaxTokens; }
+  if (tempEl) { tempEl.value = settings.chatTemperature; document.getElementById('chatTemperatureLabel').textContent = settings.chatTemperature; }
 }
 
 // ── 记忆标签页 ──
@@ -389,4 +477,18 @@ function refreshMemoryTab() {
   if (textarea) textarea.value = personalContext.get();
 }
 
-
+// ── Provider 默认值推导（首次使用时写入 localStorage） ──
+function applyProviderDefaults(meta) {
+  if (!localStorage.getItem('asr_provider') && meta.asr?.[0]) {
+    localStorage.setItem('asr_provider', meta.asr[0].id);
+  }
+  if (!localStorage.getItem('llm_provider') && meta.llm?.[0]) {
+    localStorage.setItem('llm_provider', meta.llm[0].id);
+  }
+  if (!localStorage.getItem('tts_provider') && meta.tts?.[0]) {
+    localStorage.setItem('tts_provider', meta.tts[0].id);
+  }
+  if (!localStorage.getItem('model') && meta.llm?.[0]?.models?.[0]) {
+    localStorage.setItem('model', meta.llm[0].models[0]);
+  }
+}

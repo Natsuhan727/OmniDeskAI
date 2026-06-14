@@ -20,6 +20,9 @@ function buildBody(audioBase64, frame, apiHistory) {
     llm_base_url: settings.llmBaseUrl || undefined,
     tts_provider: settings.ttsProvider,
     personalContext: personalContext.get(),
+    chatPrompt: settings.chatPrompt || undefined,
+    maxTokens: settings.chatMaxTokens,
+    temperature: settings.chatTemperature,
   };
 }
 
